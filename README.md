@@ -2,9 +2,13 @@
 
 **Safe, auditable, monetizable trading infrastructure for autonomous AI agents on Solana.**
 
-[![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)](#tests)
-[![Live on Mainnet](https://img.shields.io/badge/mainnet-proven-blue)](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf)
+[![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen)](#tests)
+[![Live on Mainnet](https://img.shields.io/badge/mainnet-2%20live%20txs-blue)](https://solscan.io/tx/5qZERks6yv1Rjhm5wHvuLRt36nofPrgrCdmeFP5xbVwkGoj4sAubdnXo6MoZUS3XsxYECcgL7ENBdMkoMjmx8kG7)
+[![Live Demo](https://img.shields.io/badge/demo-live-green)](https://df7c-89-187-168-50.ngrok-free.app/health)
+[![SDK](https://img.shields.io/badge/SDK-TypeScript-blue)](#sdk)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](#license)
+
+> **🔴 Live now:** [Health](https://df7c-89-187-168-50.ngrok-free.app/health) · [Experiment UI](https://df7c-89-187-168-50.ngrok-free.app/experiment) · [Agents](https://df7c-89-187-168-50.ngrok-free.app/agents) · [Autonomous Status](https://df7c-89-187-168-50.ngrok-free.app/autonomous/status) · [Metrics](https://df7c-89-187-168-50.ngrok-free.app/metrics)
 
 ---
 
@@ -27,7 +31,9 @@ This project solves all four.
 
 A self-contained trading API designed from the ground up for AI agents. Agents register, submit trade intents, and the system handles risk enforcement, execution, receipt generation, and fee collection — autonomously.
 
-**Proven on Solana mainnet:** [`3XmPquL...sZdKf`](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf)
+**Proven on Solana mainnet with 2 live transactions:**
+- Sell (SOL→USDC): [`3XmPquL...sZdKf`](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf)
+- Buy (USDC→SOL): [`5qZERks...x8kG7`](https://solscan.io/tx/5qZERks6yv1Rjhm5wHvuLRt36nofPrgrCdmeFP5xbVwkGoj4sAubdnXo6MoZUS3XsxYECcgL7ENBdMkoMjmx8kG7)
 
 ---
 
