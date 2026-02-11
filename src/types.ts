@@ -180,6 +180,26 @@ export interface MetricsState {
   quoteRetries: number;
 }
 
+export interface AutonomousAgentSnapshot {
+  cooldownUntilMs: number;
+  halted: boolean;
+  haltReason: string | null;
+  consecutiveFailures: number;
+  totalEvaluations: number;
+  totalIntentsCreated: number;
+  totalSkipped: number;
+  lastEvaluationAt: string | null;
+  lastIntentCreatedAt: string | null;
+}
+
+export interface AutonomousLoopState {
+  enabled: boolean;
+  intervalMs: number;
+  loopCount: number;
+  lastRunAt: string | null;
+  agentStates: Record<string, AutonomousAgentSnapshot>;
+}
+
 export interface AppState {
   agents: Record<string, Agent>;
   tradeIntents: Record<string, TradeIntent>;
@@ -192,6 +212,7 @@ export interface AppState {
   marketPricesUsd: Record<string, number>;
   marketPriceHistoryUsd: Record<string, MarketPricePoint[]>;
   metrics: MetricsState;
+  autonomous: AutonomousLoopState;
 }
 
 export interface RuntimeMetrics {

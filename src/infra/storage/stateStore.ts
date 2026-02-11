@@ -167,6 +167,11 @@ const normalizeState = (raw: unknown): AppState => {
       ...(parsed.metrics ?? {}),
       riskRejectionsByReason: parsed.metrics?.riskRejectionsByReason ?? {},
     },
+    autonomous: {
+      ...defaults.autonomous,
+      ...(parsed.autonomous ?? {}),
+      agentStates: parsed.autonomous?.agentStates ?? {},
+    },
   };
 };
 

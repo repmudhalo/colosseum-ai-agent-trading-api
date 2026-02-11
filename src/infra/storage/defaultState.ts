@@ -46,5 +46,12 @@ export const createDefaultState = (): AppState => {
       receiptCount: 0,
       quoteRetries: 0,
     },
+    autonomous: {
+      enabled: false,
+      intervalMs: 30000,
+      loopCount: 0,
+      lastRunAt: null,
+      agentStates: {},
+    },
   };
 };

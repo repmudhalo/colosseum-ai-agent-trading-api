@@ -7,6 +7,7 @@ import { EventLogger } from './infra/logger.js';
 import { StateStore } from './infra/storage/stateStore.js';
 import { ClawpumpClient } from './integrations/clawpump/client.js';
 import { AgentService } from './services/agentService.js';
+import { AutonomousService } from './services/autonomousService.js';
 import { ExecutionService } from './services/executionService.js';
 import { x402PaymentGate } from './services/paymentGate.js';
 import { TokenRevenueService } from './services/tokenRevenueService.js';
@@ -17,6 +18,7 @@ import { loadX402Policy } from './services/x402Policy.js';
 export interface AppContext {
   app: ReturnType<typeof Fastify>;
   worker: ExecutionWorker;
+  autonomousService: AutonomousService;
   stateStore: StateStore;
   logger: EventLogger;
 }
@@ -56,6 +58,13 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     config.worker.maxBatchSize,
   );
 
+  const autonomousService = new AutonomousService(
+    stateStore,
+    logger,
+    strategyRegistry,
+    config,
+  );
+
   const x402Policy = await loadX402Policy(config.payments.x402PolicyFile, config.payments.x402RequiredPaths);
   app.addHook('preHandler', x402PaymentGate(config.payments, stateStore, x402Policy));
 
@@ -69,6 +78,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     feeEngine,
     strategyRegistry,
     tokenRevenueService,
+    autonomousService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
@@ -83,6 +93,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   return {
     app,
     worker,
+    autonomousService,
     stateStore,
     logger,
   };

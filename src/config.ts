@@ -66,6 +66,15 @@ export const config = {
     x402RequiredPaths: (process.env.X402_REQUIRED_PATHS ?? '/trade-intents').split(',').map((s) => s.trim()),
     x402PolicyFile: process.env.X402_POLICY_FILE ?? path.resolve(process.cwd(), 'config', 'x402-policy.json'),
   },
+  autonomous: {
+    enabled: parseBool(process.env.AUTONOMOUS_ENABLED, false),
+    intervalMs: parseNumber(process.env.AUTONOMOUS_INTERVAL_MS, 30000),
+    maxDrawdownStopPct: parseNumber(process.env.AUTONOMOUS_MAX_DRAWDOWN_STOP_PCT, 12),
+    cooldownMs: parseNumber(process.env.AUTONOMOUS_COOLDOWN_MS, 120000),
+    cooldownAfterFailures: parseNumber(process.env.AUTONOMOUS_COOLDOWN_AFTER_FAILURES, 2),
+    defaultNotionalUsd: parseNumber(process.env.AUTONOMOUS_DEFAULT_NOTIONAL_USD, 100),
+    minConfidence: parseNumber(process.env.AUTONOMOUS_MIN_CONFIDENCE, 0.15),
+  },
   tokenRevenue: {
     baseUrl: process.env.CLAWPUMP_BASE_URL ?? 'https://www.clawpump.tech',
     apiKey: process.env.CLAWPUMP_API_KEY,

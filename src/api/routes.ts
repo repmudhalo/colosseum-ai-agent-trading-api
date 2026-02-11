@@ -7,6 +7,7 @@ import { StrategyRegistry } from '../domain/strategy/strategyRegistry.js';
 import { DomainError, ErrorCode, toErrorEnvelope } from '../errors/taxonomy.js';
 import { StateStore } from '../infra/storage/stateStore.js';
 import { AgentService } from '../services/agentService.js';
+import { AutonomousService } from '../services/autonomousService.js';
 import { resolveAgentFromKey } from '../services/auth.js';
 import { ExecutionService } from '../services/executionService.js';
 import { TokenRevenueService } from '../services/tokenRevenueService.js';
@@ -23,6 +24,7 @@ interface RouteDeps {
   feeEngine: FeeEngine;
   strategyRegistry: StrategyRegistry;
   tokenRevenueService: TokenRevenueService;
+  autonomousService: AutonomousService;
   x402Policy: X402Policy;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
@@ -458,6 +460,33 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         paidEndpoints: deps.x402Policy.paidEndpoints,
       },
     };
+  });
+
+  // ─── Autonomous loop endpoints ───────────────────────────────────────
+
+  app.get('/autonomous/status', async () => deps.autonomousService.getStatus());
+
+  const autonomousToggleSchema = z.object({
+    enabled: z.boolean(),
+  });
+
+  app.post('/autonomous/toggle', async (request, reply) => {
+    const parse = autonomousToggleSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid request payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const status = await deps.autonomousService.toggle(parse.data.enabled);
+      return { ok: true, autonomous: status };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 
   app.get('/state', async () => deps.store.snapshot());
