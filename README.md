@@ -2,7 +2,7 @@
 
 **Safe, auditable, monetizable trading infrastructure for autonomous AI agents on Solana.**
 
-[![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen)](#tests)
 [![Live on Mainnet](https://img.shields.io/badge/mainnet-2%20live%20txs-blue)](https://solscan.io/tx/5qZERks6yv1Rjhm5wHvuLRt36nofPrgrCdmeFP5xbVwkGoj4sAubdnXo6MoZUS3XsxYECcgL7ENBdMkoMjmx8kG7)
 [![Live Demo](https://img.shields.io/badge/demo-live-green)](https://df7c-89-187-168-50.ngrok-free.app/health)
 [![SDK](https://img.shields.io/badge/SDK-TypeScript-blue)](#sdk)
