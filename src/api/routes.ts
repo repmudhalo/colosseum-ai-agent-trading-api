@@ -47,6 +47,7 @@ import { InferenceBudgetService } from '../services/inferenceBudgetService.js';
 import { ImprovementLoopService } from '../services/improvementLoopService.js';
 import { TournamentService } from '../services/tournamentService.js';
 import { SocialTradingService } from '../services/socialTradingService.js';
+import { PythOracleService } from '../services/pythOracleService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -95,6 +96,7 @@ interface RouteDeps {
   improvementLoopService: ImprovementLoopService;
   tournamentService: TournamentService;
   socialTradingService: SocialTradingService;
+  pythOracleService: PythOracleService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -1342,6 +1344,39 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   app.get('/oracle/status', async () => deps.priceOracleService.getOracleStatus());
+
+  // ─── Pyth Oracle endpoints ────────────────────────────────────────────
+
+  const pythStartSchema = z.object({
+    symbols: z.array(z.string().min(1).max(10)).min(1).max(20),
+    intervalMs: z.number().int().min(1000).max(600_000).optional(),
+  });
+
+  app.get('/oracle/pyth/prices', async () => ({
+    prices: deps.pythOracleService.getAllPrices(),
+    supportedSymbols: PythOracleService.getSupportedSymbols(),
+  }));
+
+  app.post('/oracle/pyth/start', async (request, reply) => {
+    const parse = pythStartSchema.safeParse(request.body);
+    if (!parse.success) return reply.status(400).send({ error: parse.error.flatten() });
+
+    try {
+      await deps.pythOracleService.startPythFeed(parse.data.symbols, parse.data.intervalMs);
+      return { ok: true, status: deps.pythOracleService.getPythStatus() };
+    } catch (err) {
+      return reply.status(400).send({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  app.post('/oracle/pyth/stop', async () => {
+    deps.pythOracleService.stopPythFeed();
+    return { ok: true, status: deps.pythOracleService.getPythStatus() };
+  });
+
+  app.get('/oracle/pyth/status', async () => deps.pythOracleService.getPythStatus());
 
   // ─── Rebalance endpoints ──────────────────────────────────────────────
 

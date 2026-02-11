@@ -47,6 +47,7 @@ import { InferenceBudgetService } from './services/inferenceBudgetService.js';
 import { ImprovementLoopService } from './services/improvementLoopService.js';
 import { TournamentService } from './services/tournamentService.js';
 import { SocialTradingService } from './services/socialTradingService.js';
+import { PythOracleService } from './services/pythOracleService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -140,6 +141,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const improvementLoopService = new ImprovementLoopService(stateStore, selfImproveService, inferenceBudgetService);
   const tournamentService = new TournamentService(stateStore, backtestService);
   const socialTradingService = new SocialTradingService(stateStore);
+  const pythOracleService = new PythOracleService(stateStore, executionService);
 
   // Start listeners for trade history and diagnostics
   tradeHistoryService.startListening();
@@ -198,6 +200,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     improvementLoopService,
     tournamentService,
     socialTradingService,
+    pythOracleService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
