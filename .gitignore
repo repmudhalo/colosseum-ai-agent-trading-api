@@ -5,3 +5,4 @@ data/
 coverage/
 .DS_Store
 *.log
+.test-*
