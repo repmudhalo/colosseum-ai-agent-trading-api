@@ -228,10 +228,11 @@ export class SelfImproveService {
       await this.store.transaction((s) => {
         const a = s.agents[agentId];
         if (a) {
-          const current = (a.riskLimits as Record<string, number>)[field];
+          const limits = a.riskLimits as unknown as Record<string, number>;
+          const current = limits[field];
           if (current !== undefined) {
             const multiplier = adjustment === 'increase' ? (1 + changePct / 100) : (1 - changePct / 100);
-            (a.riskLimits as Record<string, number>)[field] = Number((current * multiplier).toFixed(4));
+            limits[field] = Number((current * multiplier).toFixed(4));
           }
           a.updatedAt = isoNow();
         }

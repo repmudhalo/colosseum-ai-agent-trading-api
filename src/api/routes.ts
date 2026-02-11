@@ -42,6 +42,9 @@ import { CreditRatingService } from '../services/creditRatingService.js';
 import { WatchlistService } from '../services/watchlistService.js';
 import { TradeHistoryService } from '../services/tradeHistoryService.js';
 import { DiagnosticsService } from '../services/diagnosticsService.js';
+import { SelfImproveService } from '../services/selfImproveService.js';
+import { InferenceBudgetService } from '../services/inferenceBudgetService.js';
+import { ImprovementLoopService } from '../services/improvementLoopService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -85,6 +88,9 @@ interface RouteDeps {
   watchlistService: WatchlistService;
   tradeHistoryService: TradeHistoryService;
   diagnosticsService: DiagnosticsService;
+  selfImproveService: SelfImproveService;
+  inferenceBudgetService: InferenceBudgetService;
+  improvementLoopService: ImprovementLoopService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -1617,6 +1623,71 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   app.post('/diagnostics/self-test', async () => deps.diagnosticsService.runSelfTest());
+
+  // ─── Self-Improving System endpoints ─────────────────────────────────
+
+  app.post('/agents/:agentId/improve/analyze', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      const analysis = deps.selfImproveService.analyzePerformance(agentId);
+      return analysis;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/improve/recommendations', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { recommendations: deps.selfImproveService.getRecommendations(agentId) };
+  });
+
+  app.post('/agents/:agentId/improve/apply/:recId', async (request, reply) => {
+    const { agentId, recId } = request.params as { agentId: string; recId: string };
+    try {
+      const record = await deps.selfImproveService.applyRecommendation(agentId, recId);
+      return { improvement: record };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.post('/agents/:agentId/improve/cycle', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      const cycle = await deps.improvementLoopService.runImprovementCycle(agentId);
+      return { cycle };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/improve/history', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { history: deps.selfImproveService.getImprovementHistory(agentId) };
+  });
+
+  app.get('/agents/:agentId/improve/status', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.improvementLoopService.getLoopStatus(agentId);
+  });
+
+  app.get('/agents/:agentId/inference/budget', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.inferenceBudgetService.getInferenceBudget(agentId);
+  });
+
+  app.get('/agents/:agentId/inference/history', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { history: deps.inferenceBudgetService.getInferenceHistory(agentId) };
+  });
+
+  app.get('/agents/:agentId/inference/roi', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.inferenceBudgetService.getROI(agentId);
+  });
 
   app.get('/state', async () => deps.store.snapshot());
 }

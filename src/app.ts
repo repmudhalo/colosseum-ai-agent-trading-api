@@ -42,6 +42,9 @@ import { CreditRatingService } from './services/creditRatingService.js';
 import { WatchlistService } from './services/watchlistService.js';
 import { TradeHistoryService } from './services/tradeHistoryService.js';
 import { DiagnosticsService } from './services/diagnosticsService.js';
+import { SelfImproveService } from './services/selfImproveService.js';
+import { InferenceBudgetService } from './services/inferenceBudgetService.js';
+import { ImprovementLoopService } from './services/improvementLoopService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -130,6 +133,9 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const watchlistService = new WatchlistService(stateStore);
   const tradeHistoryService = new TradeHistoryService(stateStore);
   const diagnosticsService = new DiagnosticsService(stateStore, agentService, intentService);
+  const selfImproveService = new SelfImproveService(stateStore);
+  const inferenceBudgetService = new InferenceBudgetService(stateStore);
+  const improvementLoopService = new ImprovementLoopService(stateStore, selfImproveService, inferenceBudgetService);
 
   // Start listeners for trade history and diagnostics
   tradeHistoryService.startListening();
@@ -183,6 +189,9 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     watchlistService,
     tradeHistoryService,
     diagnosticsService,
+    selfImproveService,
+    inferenceBudgetService,
+    improvementLoopService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

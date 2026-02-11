@@ -23,6 +23,7 @@ export const ErrorCode = {
   ListingNotFound: 'listing_not_found',
   BacktestFailed: 'backtest_failed',
   OrderNotFound: 'order_not_found',
+  RecommendationNotFound: 'recommendation_not_found',
   InternalError: 'internal_error',
 } as const;
 

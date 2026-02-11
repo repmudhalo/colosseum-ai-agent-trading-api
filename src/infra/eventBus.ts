@@ -26,7 +26,10 @@ export type EventType =
   | 'alert.deleted'
   | 'copytrade.executed'
   | 'watchlist.added'
-  | 'watchlist.removed';
+  | 'watchlist.removed'
+  | 'improve.analyzed'
+  | 'improve.applied'
+  | 'improve.cycle';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 
