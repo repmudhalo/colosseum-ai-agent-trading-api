@@ -1,16 +1,32 @@
 # JUDGES.md — 2-Minute Walkthrough
 
-> **TL;DR:** Run `bash scripts/demo-judge.sh` — it proves safety, auditability, and monetization in one shot.
+> **TL;DR:** Run `bash scripts/demo-judge.sh` — it proves safety, auditability, and monetization in one shot. Then explore the live demo.
+
+---
+
+## Live Deployment
+
+> **🔴 Live now:** [`https://df7c-89-187-168-50.ngrok-free.app`](https://df7c-89-187-168-50.ngrok-free.app/health)
+
+Try these endpoints right now:
+- [`/health`](https://df7c-89-187-168-50.ngrok-free.app/health) — system health + stats
+- [`/experiment`](https://df7c-89-187-168-50.ngrok-free.app/experiment) — interactive dashboard
+- [`/agents`](https://df7c-89-187-168-50.ngrok-free.app/agents) — registered agents
+- [`/marketplace/listings`](https://df7c-89-187-168-50.ngrok-free.app/marketplace/listings) — strategy marketplace
+- [`/orderbook/SOL-USDC`](https://df7c-89-187-168-50.ngrok-free.app/orderbook/SOL-USDC) — order book depth
+- [`/arbitrage/status`](https://df7c-89-187-168-50.ngrok-free.app/arbitrage/status) — arbitrage scanner
+- [`/reputation/leaderboard`](https://df7c-89-187-168-50.ngrok-free.app/reputation/leaderboard) — agent reputation
 
 ---
 
 ## Live Mainnet Proof
 
-Before anything else — this isn't a paper-only prototype. We executed a real swap on Solana mainnet via Jupiter:
+Two confirmed swaps on Solana mainnet via Jupiter:
 
-> **TX:** [`3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf`](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf)
+> **TX 1 (Sell SOL→USDC):** [`3XmPquL...sZdKf`](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf)
+> **TX 2 (Buy USDC→SOL):** [`5qZERks...x8kG7`](https://solscan.io/tx/5qZERks6yv1Rjhm5wHvuLRt36nofPrgrCdmeFP5xbVwkGoj4sAubdnXo6MoZUS3XsxYECcgL7ENBdMkoMjmx8kG7)
 
-Flow: Jupiter lite-api (`https://lite-api.jup.ag/swap/v1/quote` → `/swap/v1/swap`) → `@solana/web3.js` sign → RPC broadcast → on-chain confirmation.
+Flow: Jupiter lite-api quote → swap instruction → `@solana/web3.js` sign → RPC broadcast → on-chain confirmation.
 
 ---
 
@@ -19,9 +35,8 @@ Flow: Jupiter lite-api (`https://lite-api.jup.ag/swap/v1/quote` → `/swap/v1/sw
 ```bash
 npm install
 cp .env.example .env
+npm run dev    # Paper mode works out of the box
 ```
-
-Paper mode works out of the box — no RPC or keys needed.
 
 ---
 
@@ -30,8 +45,6 @@ Paper mode works out of the box — no RPC or keys needed.
 ```bash
 bash scripts/demo-judge.sh
 ```
-
-What it proves automatically:
 
 | Step | What happens | What it proves |
 |---|---|---|
@@ -46,88 +59,89 @@ What it proves automatically:
 
 ---
 
-## 2) Manual Spot Checks (optional)
+## 2) Feature Tour
 
-Start the server:
-
+### 5 Trading Strategies
 ```bash
-npm run build
-node dist/index.js
+curl -s http://localhost:8787/strategies
+# momentum-v1, mean-reversion-v1, arbitrage-v1, dca-v1, twap-v1
 ```
 
-In another terminal:
-
-### Register an agent
-
+### Backtest Any Strategy
 ```bash
-curl -s -X POST http://localhost:8787/agents/register \
+curl -s -X POST http://localhost:8787/backtest \
   -H 'content-type: application/json' \
-  -d '{"name":"judge-manual","strategyId":"momentum-v1"}'
+  -d '{
+    "strategyId": "momentum-v1",
+    "priceHistory": [100,101,102,103,104,105,106,107,108,109,110,112,115,118,120,122],
+    "capitalUsd": 10000
+  }'
+# Returns: Sharpe ratio, max drawdown, win rate, trade details
 ```
 
-### Test idempotency (replay + conflict)
-
+### Strategy Marketplace
 ```bash
-# First request
-curl -s -X POST http://localhost:8787/trade-intents \
+# List a strategy
+curl -s -X POST http://localhost:8787/marketplace/listings \
   -H 'content-type: application/json' \
-  -H "x-agent-api-key: <API_KEY>" \
-  -H 'x-idempotency-key: demo-key-1' \
-  -d '{"agentId":"<AGENT_ID>","symbol":"SOL","side":"buy","notionalUsd":80,"requestedMode":"paper"}'
+  -d '{"agentId":"<AGENT_ID>","strategyId":"momentum-v1","description":"Trend-following SMA crossover"}'
 
-# Same key, same payload → idempotent replay (returns same intent)
-curl -s -X POST http://localhost:8787/trade-intents \
+# Browse strategies (ranked by reputation)
+curl -s http://localhost:8787/marketplace/listings
+```
+
+### Multi-Agent Squads
+```bash
+# Create a squad
+curl -s -X POST http://localhost:8787/squads \
   -H 'content-type: application/json' \
-  -H "x-agent-api-key: <API_KEY>" \
-  -H 'x-idempotency-key: demo-key-1' \
-  -d '{"agentId":"<AGENT_ID>","symbol":"SOL","side":"buy","notionalUsd":80,"requestedMode":"paper"}'
+  -d '{"name":"alpha-squad","strategyId":"momentum-v1","creatorAgentId":"<AGENT_ID>"}'
 
-# Same key, different payload → 409 Conflict
-curl -i -s -X POST http://localhost:8787/trade-intents \
+# View aggregated squad positions
+curl -s http://localhost:8787/squads/<SQUAD_ID>/positions
+```
+
+### Order Book Depth
+```bash
+curl -s http://localhost:8787/orderbook/SOL-USDC
+# Bid/ask levels with 0.5% price bucketing + intent flow stats
+```
+
+### Agent Reputation & Governance
+```bash
+curl -s http://localhost:8787/reputation/leaderboard
+curl -s http://localhost:8787/governance/proposals
+```
+
+### On-Chain Proof Anchoring
+```bash
+curl -s http://localhost:8787/proofs/anchors
+# Receipt hashes anchored to Solana for tamper-proof verification
+```
+
+### Privacy Layer
+```bash
+curl -s http://localhost:8787/privacy/policy
+# AES-256-GCM encrypted intents + redacted receipts
+```
+
+### Simulate Without Executing
+```bash
+curl -s -X POST http://localhost:8787/simulate \
   -H 'content-type: application/json' \
-  -H "x-agent-api-key: <API_KEY>" \
-  -H 'x-idempotency-key: demo-key-1' \
-  -d '{"agentId":"<AGENT_ID>","symbol":"SOL","side":"buy","notionalUsd":120,"requestedMode":"paper"}'
+  -d '{"agentId":"<AGENT_ID>","symbol":"SOL-USDC","side":"buy","notionalUsd":100}'
+# Runs full pipeline without touching live markets
 ```
-
-### Risk telemetry
-
-```bash
-curl -s http://localhost:8787/agents/<AGENT_ID>/risk | node -e "process.stdin.pipe(process.stdout)"
-```
-
-Returns: drawdown %, gross exposure, daily PnL, reject counters by reason, cooldown state, agent limits.
-
-### Execution receipt + verification
-
-```bash
-curl -s http://localhost:8787/executions/<EXECUTION_ID>/receipt
-curl -s http://localhost:8787/receipts/verify/<EXECUTION_ID>
-```
-
-### Live dashboard
-
-Open in browser: [http://localhost:8787/experiment](http://localhost:8787/experiment)
-
-### Clawpump token revenue integration
-
-```bash
-curl -s http://localhost:8787/integrations/clawpump/health
-curl -s 'http://localhost:8787/integrations/clawpump/earnings?agentId=<AGENT_ID>'
-curl -s http://localhost:8787/integrations/clawpump/launch-attempts
-```
-
-Upstream degradation returns structured error responses (with status codes and action hints), not opaque 500s.
 
 ---
 
 ## 3) Test Suite
 
 ```bash
-npm test   # 33 tests, all passing
+npm test   # 175 tests across 31 files, all passing
 ```
 
-Covers: risk engine, fee engine, receipt engine, strategy registry, idempotency (API-level), experiment dashboard, Clawpump wallet logic, Clawpump error mapping.
+Covers: risk engine, fee engine, receipt engine, 5 strategies, idempotency, arbitrage, DCA, backtesting, marketplace, squads, governance, reputation, simulation, webhooks, rate limiting, order book, pipeline, analytics, and more.
 
 ---
 
@@ -135,9 +149,30 @@ Covers: risk engine, fee engine, receipt engine, strategy registry, idempotency 
 
 | Dimension | How we deliver |
 |---|---|
-| **Safety** | Multi-factor risk engine: position limits, order caps, exposure limits, daily loss cap, drawdown threshold, cooldown timer. Rejections are explicit and counted. |
-| **Auditability** | SHA-256 hash-chained execution receipts with deterministic verification API. Append-only NDJSON event log. |
-| **Monetization** | Three revenue streams: per-execution fee treasury, Jupiter platform referral fees, x402 payment gates. |
-| **Reliability** | Idempotent intent ingestion prevents duplicate trades. Retry/backoff on Jupiter quote path. |
-| **Extensibility** | Pluggable strategy registry. New strategies = one file + register. |
-| **Proven** | Not a mockup — [live mainnet transaction](https://solscan.io/tx/3XmPquLChzX9w7Sot9i9wiW5uJ91ibAtkGpwwFSqjeg9EuDXij5tmNtVTF7QyARMq2RJyMkCz6f9EEb2JJLsZdKf). |
+| **Breadth** | Not just trading — backtesting, arbitrage, lending, marketplace, multi-agent squads, governance, privacy. A full DeFi hub. |
+| **Safety** | 6-layer risk engine + staged execution pipeline (validate → simulate → execute). Autonomous guard with drawdown halt. |
+| **Auditability** | SHA-256 hash-chained receipts + on-chain Solana proof anchoring. Append-only NDJSON event log. |
+| **Intelligence** | 5 pluggable strategies + backtesting engine. Agents validate before risking capital. |
+| **Coordination** | Multi-agent squads, agent messaging, reputation leaderboard, governance voting. |
+| **Monetization** | Per-execution fees, Jupiter referral fees, x402 payment gates, strategy marketplace subscriptions. |
+| **Reliability** | Idempotent ingestion, rate limiting, webhook delivery, WebSocket live feed. |
+| **Privacy** | AES-256-GCM encrypted intents + redacted receipts with hash chain integrity. |
+| **Proven** | 2 live mainnet transactions + public demo + 175 automated tests. |
+| **SDK** | Zero-dep TypeScript client with 15 methods — agents can integrate in minutes. |
+
+---
+
+## Architecture at a Glance
+
+```
+Agent → API Gateway (auth + rate limit + idempotency)
+     → Strategy Engine (5 strategies)
+     → Risk Engine (6 layers)
+     → Staged Pipeline (validate → simulate → execute)
+     → Execution (paper or live Jupiter)
+     → Receipt Chain (SHA-256 + on-chain anchor)
+     → Webhook + WebSocket delivery
+     → Analytics + Reputation
+```
+
+**65 source files · ~10,000 lines · 175 tests · 2 mainnet transactions · live demo**
