@@ -39,6 +39,9 @@ import { RebalanceService } from '../services/rebalanceService.js';
 import { AlertService } from '../services/alertService.js';
 import { CopyTradingService } from '../services/copyTradingService.js';
 import { CreditRatingService } from '../services/creditRatingService.js';
+import { WatchlistService } from '../services/watchlistService.js';
+import { TradeHistoryService } from '../services/tradeHistoryService.js';
+import { DiagnosticsService } from '../services/diagnosticsService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -79,6 +82,9 @@ interface RouteDeps {
   alertService: AlertService;
   copyTradingService: CopyTradingService;
   creditRatingService: CreditRatingService;
+  watchlistService: WatchlistService;
+  tradeHistoryService: TradeHistoryService;
+  diagnosticsService: DiagnosticsService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -1496,6 +1502,121 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   app.get('/credit-ratings', async () => deps.creditRatingService.getAllRatings());
+
+  // ─── Watchlist endpoints ──────────────────────────────────────────────
+
+  const addWatchlistSchema = z.object({
+    symbol: z.string().min(1).max(20),
+    notes: z.string().max(500).optional(),
+  });
+
+  app.post('/agents/:agentId/watchlist', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = addWatchlistSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid watchlist payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const entry = deps.watchlistService.addToWatchlist(agentId, parse.data.symbol, parse.data.notes);
+      return reply.code(201).send({ entry });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.delete('/agents/:agentId/watchlist/:symbol', async (request, reply) => {
+    const { agentId, symbol } = request.params as { agentId: string; symbol: string };
+    try {
+      return deps.watchlistService.removeFromWatchlist(agentId, symbol);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/watchlist', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return { watchlist: deps.watchlistService.getWatchlist(agentId) };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/watchlist/trending', async () => ({
+    trending: deps.watchlistService.getTrending(),
+  }));
+
+  // ─── Trade History endpoints ──────────────────────────────────────────
+
+  app.get('/agents/:agentId/trades', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as {
+      symbol?: string;
+      side?: string;
+      startDate?: string;
+      endDate?: string;
+      limit?: string;
+      offset?: string;
+    };
+
+    try {
+      return deps.tradeHistoryService.getTradeHistory(agentId, {
+        symbol: query.symbol,
+        side: query.side === 'buy' || query.side === 'sell' ? query.side : undefined,
+        startDate: query.startDate,
+        endDate: query.endDate,
+        limit: query.limit ? Number(query.limit) : undefined,
+        offset: query.offset ? Number(query.offset) : undefined,
+      });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/performance', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.tradeHistoryService.getPerformanceSummary(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/streaks', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.tradeHistoryService.getStreaks(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Diagnostics endpoints ────────────────────────────────────────────
+
+  app.get('/diagnostics/health', async () => deps.diagnosticsService.getSystemHealth());
+
+  app.get('/diagnostics/services', async () => ({
+    services: deps.diagnosticsService.getServiceStatus(),
+  }));
+
+  app.get('/diagnostics/errors', async (request) => {
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Number(query.limit) : undefined;
+    return { errors: deps.diagnosticsService.getErrorLog(limit) };
+  });
+
+  app.post('/diagnostics/self-test', async () => deps.diagnosticsService.runSelfTest());
 
   app.get('/state', async () => deps.store.snapshot());
 }

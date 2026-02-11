@@ -39,6 +39,9 @@ import { RebalanceService } from './services/rebalanceService.js';
 import { AlertService } from './services/alertService.js';
 import { CopyTradingService } from './services/copyTradingService.js';
 import { CreditRatingService } from './services/creditRatingService.js';
+import { WatchlistService } from './services/watchlistService.js';
+import { TradeHistoryService } from './services/tradeHistoryService.js';
+import { DiagnosticsService } from './services/diagnosticsService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -124,6 +127,13 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const alertService = new AlertService(stateStore);
   const copyTradingService = new CopyTradingService(stateStore);
   const creditRatingService = new CreditRatingService(stateStore);
+  const watchlistService = new WatchlistService(stateStore);
+  const tradeHistoryService = new TradeHistoryService(stateStore);
+  const diagnosticsService = new DiagnosticsService(stateStore, agentService, intentService);
+
+  // Start listeners for trade history and diagnostics
+  tradeHistoryService.startListening();
+  diagnosticsService.startListening();
 
   // Wire messaging service to coordination service for squad member lookup
   messagingService.setSquadMemberLookup((squadId: string) => {
@@ -170,6 +180,9 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     alertService,
     copyTradingService,
     creditRatingService,
+    watchlistService,
+    tradeHistoryService,
+    diagnosticsService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
