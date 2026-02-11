@@ -22,7 +22,7 @@ describe('experiment dashboard routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
-    expect(res.body).toContain('Live Experiment Dashboard');
+    expect(res.body).toContain('Timmy Agent Trading API');
     expect(res.body).toContain('/receipts/verify/');
   });
 
