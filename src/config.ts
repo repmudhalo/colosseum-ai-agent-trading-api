@@ -48,6 +48,9 @@ export const config = {
       BONK: process.env.MINT_BONK ?? 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6Y7YaB1pPB263',
       JUP: process.env.MINT_JUP ?? 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
     } as Record<string, string>,
+    quoteRetryAttempts: parseNumber(process.env.QUOTE_RETRY_ATTEMPTS, 3),
+    quoteRetryBaseDelayMs: parseNumber(process.env.QUOTE_RETRY_BASE_DELAY_MS, 150),
+    marketHistoryLimit: parseNumber(process.env.MARKET_HISTORY_LIMIT, 100),
   },
   risk: {
     maxPositionSizePct: parseNumber(process.env.RISK_MAX_POSITION_SIZE_PCT, 0.25),
@@ -61,6 +64,7 @@ export const config = {
     x402Enabled: parseBool(process.env.X402_ENABLED, false),
     x402VerifierUrl: process.env.X402_VERIFIER_URL,
     x402RequiredPaths: (process.env.X402_REQUIRED_PATHS ?? '/trade-intents').split(',').map((s) => s.trim()),
+    x402PolicyFile: process.env.X402_POLICY_FILE ?? path.resolve(process.cwd(), 'config', 'x402-policy.json'),
   },
 };
 

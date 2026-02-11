@@ -1,13 +1,19 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { AppConfig } from '../config.js';
+import { ErrorCode, toErrorEnvelope } from '../errors/taxonomy.js';
 import { StateStore } from '../infra/storage/stateStore.js';
+import { findPaidEndpoint, X402Policy } from './x402Policy.js';
 
-export const x402PaymentGate = (config: AppConfig['payments'], store: StateStore) => {
+export const x402PaymentGate = (
+  config: AppConfig['payments'],
+  store: StateStore,
+  policy: X402Policy,
+) => {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!config.x402Enabled) return;
 
-    const shouldGate = config.x402RequiredPaths.some((prefix) => request.url.startsWith(prefix));
-    if (!shouldGate) return;
+    const paidEndpoint = findPaidEndpoint(policy, request.method, request.url);
+    if (!paidEndpoint) return;
 
     const proofHeader = (request.headers['x402-proof'] ?? request.headers['x-payment-proof']) as string | undefined;
     const ok = await verifyProof(proofHeader, config.x402VerifierUrl);
@@ -20,11 +26,19 @@ export const x402PaymentGate = (config: AppConfig['payments'], store: StateStore
     });
 
     reply.code(402).send({
-      error: 'payment_required',
+      ...toErrorEnvelope(
+        ErrorCode.PaymentRequired,
+        'Missing or invalid x402 payment proof. Supply x402-proof header.',
+      ),
       protocol: 'x402',
-      message: 'Missing or invalid x402 payment proof. Supply x402-proof header.',
       acceptedHeaders: ['x402-proof', 'x-payment-proof'],
       verifyEndpoint: config.x402VerifierUrl ?? null,
+      requiredPlan: paidEndpoint.plan,
+      endpointPolicy: {
+        method: paidEndpoint.method,
+        pathPrefix: paidEndpoint.pathPrefix,
+      },
+      policyVersion: policy.version,
     });
   };
 };

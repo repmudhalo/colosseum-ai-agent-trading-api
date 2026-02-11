@@ -22,6 +22,8 @@ const baseAgent = (): Agent => ({
   },
   positions: {},
   dailyRealizedPnlUsd: {},
+  strategyId: 'momentum-v1',
+  riskRejectionsByReason: {},
 });
 
 const baseIntent = (): TradeIntent => ({

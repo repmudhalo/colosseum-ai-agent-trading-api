@@ -1,11 +1,22 @@
 import { v4 as uuid } from 'uuid';
 import { AppConfig } from '../config.js';
 import { FeeEngine } from '../domain/fee/feeEngine.js';
+import { ReceiptEngine } from '../domain/receipt/receiptEngine.js';
 import { RiskEngine } from '../domain/risk/riskEngine.js';
+import { StrategyRegistry } from '../domain/strategy/strategyRegistry.js';
 import { JupiterClient } from '../infra/live/jupiterClient.js';
 import { EventLogger } from '../infra/logger.js';
 import { StateStore } from '../infra/storage/stateStore.js';
-import { Agent, ExecutionMode, ExecutionRecord, TradeIntent } from '../types.js';
+import {
+  Agent,
+  AppState,
+  ExecutionMode,
+  ExecutionRecord,
+  ExecutionReceipt,
+  RiskTelemetry,
+  TradeIntent,
+} from '../types.js';
+import { retryWithBackoff } from '../utils/retry.js';
 import { dayKey, isoNow } from '../utils/time.js';
 
 const DECIMALS_BY_SYMBOL: Record<string, number> = {
@@ -15,8 +26,12 @@ const DECIMALS_BY_SYMBOL: Record<string, number> = {
   JUP: 6,
 };
 
+type ExecutionBase = Omit<ExecutionRecord, 'status' | 'netUsd' | 'realizedPnlUsd' | 'pnlSnapshotUsd'>;
+
 export class ExecutionService {
   private readonly riskEngine = new RiskEngine();
+  private readonly receiptEngine = new ReceiptEngine();
+  private readonly strategyRegistry = new StrategyRegistry();
   private readonly jupiterClient: JupiterClient;
 
   constructor(
@@ -36,13 +51,104 @@ export class ExecutionService {
 
   async setMarketPrice(symbol: string, priceUsd: number): Promise<void> {
     await this.store.transaction((state) => {
-      state.marketPricesUsd[symbol.toUpperCase()] = Number(priceUsd.toFixed(8));
+      const normalizedSymbol = symbol.toUpperCase();
+      state.marketPricesUsd[normalizedSymbol] = Number(priceUsd.toFixed(8));
+
+      const currentHistory = state.marketPriceHistoryUsd[normalizedSymbol] ?? [];
+      const nextHistory = [
+        ...currentHistory,
+        {
+          ts: isoNow(),
+          priceUsd: Number(priceUsd.toFixed(8)),
+        },
+      ].slice(-this.config.trading.marketHistoryLimit);
+
+      state.marketPriceHistoryUsd[normalizedSymbol] = nextHistory;
       return undefined;
     });
   }
 
   getMarketPrices(): Record<string, number> {
     return this.store.snapshot().marketPricesUsd;
+  }
+
+  getExecutionById(executionId: string): ExecutionRecord | undefined {
+    return this.store.snapshot().executions[executionId];
+  }
+
+  getReceiptByExecutionId(executionId: string): ExecutionReceipt | undefined {
+    return this.store.snapshot().executionReceipts[executionId];
+  }
+
+  verifyReceipt(executionId: string): {
+    ok: boolean;
+    receipt: ExecutionReceipt;
+    execution: ExecutionRecord;
+    expectedPayloadHash: string;
+    expectedReceiptHash: string;
+    expectedSignaturePayloadHash: string;
+  } | undefined {
+    const snapshot = this.store.snapshot();
+    const execution = snapshot.executions[executionId];
+    const receipt = snapshot.executionReceipts[executionId];
+    if (!execution || !receipt) return undefined;
+
+    const verification = this.receiptEngine.verifyReceipt(execution, receipt);
+
+    return {
+      ok: verification.ok,
+      receipt,
+      execution,
+      expectedPayloadHash: verification.expectedPayloadHash,
+      expectedReceiptHash: verification.expectedReceiptHash,
+      expectedSignaturePayloadHash: verification.expectedSignaturePayloadHash,
+    };
+  }
+
+  getRiskTelemetry(agentId: string): RiskTelemetry | undefined {
+    const snapshot = this.store.snapshot();
+    const agent = snapshot.agents[agentId];
+    if (!agent) return undefined;
+
+    const asOfDate = new Date();
+    const asOf = isoNow();
+
+    const equityUsd = this.riskEngine.computeEquityUsd(agent, (symbol) => snapshot.marketPricesUsd[symbol]);
+    const grossExposureUsd = this.riskEngine.computeGrossExposureUsd(agent, (symbol) => snapshot.marketPricesUsd[symbol]);
+    const drawdownPct = agent.peakEquityUsd > 0
+      ? Number(((agent.peakEquityUsd - equityUsd) / agent.peakEquityUsd).toFixed(8))
+      : 0;
+
+    const cooldownMs = agent.riskLimits.cooldownSeconds * 1000;
+    const lastTradeMs = agent.lastTradeAt ? new Date(agent.lastTradeAt).getTime() : undefined;
+    const remainingMs = lastTradeMs !== undefined
+      ? Math.max(0, (lastTradeMs + cooldownMs) - asOfDate.getTime())
+      : 0;
+
+    const cooldown = {
+      active: remainingMs > 0,
+      cooldownSeconds: agent.riskLimits.cooldownSeconds,
+      remainingSeconds: Number((remainingMs / 1000).toFixed(3)),
+      lastTradeAt: agent.lastTradeAt,
+      cooldownUntil: lastTradeMs !== undefined ? new Date(lastTradeMs + cooldownMs).toISOString() : undefined,
+    };
+
+    return {
+      agentId,
+      asOf,
+      strategyId: agent.strategyId,
+      cashUsd: agent.cashUsd,
+      equityUsd,
+      grossExposureUsd,
+      realizedPnlUsd: agent.realizedPnlUsd,
+      dailyPnlUsd: agent.dailyRealizedPnlUsd[dayKey(asOfDate)] ?? 0,
+      peakEquityUsd: agent.peakEquityUsd,
+      drawdownPct,
+      rejectCountersByReason: { ...agent.riskRejectionsByReason },
+      globalRejectCountersByReason: { ...snapshot.metrics.riskRejectionsByReason },
+      cooldown,
+      limits: agent.riskLimits,
+    };
   }
 
   async processIntent(intentId: string): Promise<void> {
@@ -69,6 +175,22 @@ export class ExecutionService {
       return;
     }
 
+    const strategySignal = this.strategyRegistry.evaluate(agent.strategyId, {
+      symbol: claim.symbol,
+      currentPriceUsd: marketPrice,
+      priceHistoryUsd: (snapshot.marketPriceHistoryUsd[claim.symbol] ?? []).map((point) => point.priceUsd),
+    });
+
+    if (strategySignal.action === 'hold') {
+      await this.markIntentRejected(claim.id, `strategy_hold:${agent.strategyId}`);
+      return;
+    }
+
+    if (strategySignal.action !== claim.side) {
+      await this.markIntentRejected(claim.id, `strategy_side_mismatch:${agent.strategyId}:${strategySignal.action}`);
+      return;
+    }
+
     const decision = this.riskEngine.evaluate({
       agent,
       intent: claim,
@@ -88,7 +210,7 @@ export class ExecutionService {
     }
 
     const executionId = uuid();
-    const executionBase = {
+    const executionBase: ExecutionBase = {
       id: executionId,
       intentId: claim.id,
       agentId: claim.agentId,
@@ -100,20 +222,19 @@ export class ExecutionService {
       feeUsd: this.feeEngine.calculateExecutionFeeUsd(decision.computedNotionalUsd),
       mode,
       createdAt: isoNow(),
-    } as const;
+    };
 
     if (mode === 'paper') {
-      await this.applyPaperExecution(claim, agent, executionBase);
+      await this.applyPaperExecution(claim, executionBase);
       return;
     }
 
-    await this.applyLiveExecution(claim, agent, executionBase);
+    await this.applyLiveExecution(claim, executionBase);
   }
 
   private async applyPaperExecution(
     intent: TradeIntent,
-    _agent: Agent,
-    executionBase: Omit<ExecutionRecord, 'status' | 'netUsd' | 'realizedPnlUsd'>,
+    executionBase: ExecutionBase,
   ): Promise<void> {
     await this.store.transaction((state) => {
       const agent = state.agents[intent.agentId];
@@ -135,9 +256,11 @@ export class ExecutionService {
           failureReason: applyResult.reason,
           netUsd: 0,
           realizedPnlUsd: 0,
+          pnlSnapshotUsd: agent.realizedPnlUsd,
         };
 
-        state.executions[failed.id] = failed;
+        this.persistExecutionWithReceipt(state, failed);
+
         trackedIntent.status = 'failed';
         trackedIntent.statusReason = applyResult.reason;
         trackedIntent.executionId = failed.id;
@@ -151,9 +274,11 @@ export class ExecutionService {
         status: 'filled',
         netUsd: applyResult.netUsd,
         realizedPnlUsd: applyResult.realizedPnlUsd,
+        pnlSnapshotUsd: agent.realizedPnlUsd,
       };
 
-      state.executions[execution.id] = execution;
+      this.persistExecutionWithReceipt(state, execution);
+
       trackedIntent.status = 'executed';
       trackedIntent.executionId = execution.id;
       trackedIntent.updatedAt = isoNow();
@@ -182,8 +307,7 @@ export class ExecutionService {
 
   private async applyLiveExecution(
     intent: TradeIntent,
-    _agent: Agent,
-    executionBase: Omit<ExecutionRecord, 'status' | 'netUsd' | 'realizedPnlUsd'>,
+    executionBase: ExecutionBase,
   ): Promise<void> {
     const symbolMint = this.config.trading.symbolToMint[intent.symbol];
     const usdcMint = this.config.trading.symbolToMint.USDC;
@@ -196,16 +320,36 @@ export class ExecutionService {
     const isBuy = intent.side === 'buy';
     const feeParams = this.feeEngine.buildJupiterFeeParams();
 
-    const quote = await this.jupiterClient.quote({
-      inputMint: isBuy ? usdcMint : symbolMint,
-      outputMint: isBuy ? symbolMint : usdcMint,
-      amount: this.toChainAmount(
-        isBuy ? 'USDC' : intent.symbol,
-        executionBase.grossNotionalUsd / (isBuy ? 1 : executionBase.priceUsd),
-      ),
-      slippageBps: 50,
-      platformFeeBps: feeParams.platformFeeBps,
-    }).catch(async (error: unknown) => {
+    const quote = await retryWithBackoff(
+      () => this.jupiterClient.quote({
+        inputMint: isBuy ? usdcMint : symbolMint,
+        outputMint: isBuy ? symbolMint : usdcMint,
+        amount: this.toChainAmount(
+          isBuy ? 'USDC' : intent.symbol,
+          executionBase.grossNotionalUsd / (isBuy ? 1 : executionBase.priceUsd),
+        ),
+        slippageBps: 50,
+        platformFeeBps: feeParams.platformFeeBps,
+      }),
+      {
+        maxAttempts: this.config.trading.quoteRetryAttempts,
+        baseDelayMs: this.config.trading.quoteRetryBaseDelayMs,
+        maxDelayMs: 2_000,
+        onRetry: async ({ attempt, nextDelayMs, error }) => {
+          await this.store.transaction((state) => {
+            state.metrics.quoteRetries += 1;
+            return undefined;
+          });
+
+          await this.logger.log('warn', 'jupiter.quote.retry', {
+            intentId: intent.id,
+            attempt,
+            nextDelayMs,
+            error: String(error),
+          });
+        },
+      },
+    ).catch(async (error: unknown) => {
       await this.markIntentFailed(intent.id, `jupiter_quote_error:${String(error)}`);
       return undefined;
     });
@@ -239,9 +383,11 @@ export class ExecutionService {
           failureReason: applyResult.reason,
           netUsd: 0,
           realizedPnlUsd: 0,
+          pnlSnapshotUsd: agent.realizedPnlUsd,
         };
 
-        state.executions[failed.id] = failed;
+        this.persistExecutionWithReceipt(state, failed);
+
         trackedIntent.status = 'failed';
         trackedIntent.statusReason = applyResult.reason;
         trackedIntent.executionId = failed.id;
@@ -255,10 +401,12 @@ export class ExecutionService {
         status: 'filled',
         netUsd: applyResult.netUsd,
         realizedPnlUsd: applyResult.realizedPnlUsd,
+        pnlSnapshotUsd: agent.realizedPnlUsd,
         txSignature: swap.txSignature,
       };
 
-      state.executions[filled.id] = filled;
+      this.persistExecutionWithReceipt(state, filled);
+
       trackedIntent.status = 'executed';
       trackedIntent.executionId = filled.id;
       trackedIntent.updatedAt = isoNow();
@@ -297,6 +445,16 @@ export class ExecutionService {
   private toChainAmount(symbol: string, units: number): number {
     const decimals = DECIMALS_BY_SYMBOL[symbol] ?? 6;
     return Math.floor(units * 10 ** decimals);
+  }
+
+  private persistExecutionWithReceipt(state: AppState, execution: ExecutionRecord): void {
+    const receipt = this.receiptEngine.createReceipt(execution, state.latestReceiptHash);
+    execution.receiptHash = receipt.receiptHash;
+
+    state.executions[execution.id] = execution;
+    state.executionReceipts[execution.id] = receipt;
+    state.latestReceiptHash = receipt.receiptHash;
+    state.metrics.receiptCount += 1;
   }
 
   private applyAccountingTrade(
@@ -395,6 +553,12 @@ export class ExecutionService {
       intent.updatedAt = isoNow();
       state.metrics.intentsRejected += 1;
       state.metrics.riskRejectionsByReason[reason] = (state.metrics.riskRejectionsByReason[reason] ?? 0) + 1;
+
+      const agent = state.agents[intent.agentId];
+      if (agent) {
+        agent.riskRejectionsByReason[reason] = (agent.riskRejectionsByReason[reason] ?? 0) + 1;
+      }
+
       return undefined;
     });
 

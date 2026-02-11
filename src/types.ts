@@ -1,6 +1,7 @@
 export type Side = 'buy' | 'sell';
 export type IntentStatus = 'pending' | 'processing' | 'executed' | 'rejected' | 'failed';
 export type ExecutionMode = 'paper' | 'live';
+export type StrategyId = 'momentum-v1' | 'mean-reversion-v1';
 
 export interface RiskLimits {
   maxPositionSizePct: number;
@@ -30,6 +31,8 @@ export interface Agent {
   riskLimits: RiskLimits;
   positions: Record<string, Position>;
   dailyRealizedPnlUsd: Record<string, number>;
+  riskRejectionsByReason: Record<string, number>;
+  strategyId: StrategyId;
   lastTradeAt?: string;
 }
 
@@ -42,6 +45,8 @@ export interface TradeIntent {
   notionalUsd?: number;
   requestedMode?: ExecutionMode;
   meta?: Record<string, unknown>;
+  idempotencyKey?: string;
+  requestHash?: string;
   createdAt: string;
   updatedAt: string;
   status: IntentStatus;
@@ -61,11 +66,59 @@ export interface ExecutionRecord {
   feeUsd: number;
   netUsd: number;
   realizedPnlUsd: number;
+  pnlSnapshotUsd: number;
   mode: ExecutionMode;
   status: 'filled' | 'failed';
   failureReason?: string;
   txSignature?: string;
+  receiptHash?: string;
   createdAt: string;
+}
+
+export interface ExecutionReceipt {
+  version: 'v1';
+  executionId: string;
+  payload: {
+    executionId: string;
+    intentId: string;
+    agentId: string;
+    symbol: string;
+    side: Side;
+    quantity: number;
+    priceUsd: number;
+    grossNotionalUsd: number;
+    feeUsd: number;
+    netUsd: number;
+    realizedPnlUsd: number;
+    pnlSnapshotUsd: number;
+    mode: ExecutionMode;
+    status: ExecutionRecord['status'];
+    failureReason?: string;
+    txSignature?: string;
+    timestamp: string;
+  };
+  payloadHash: string;
+  prevReceiptHash?: string;
+  receiptHash: string;
+  signaturePayload: {
+    scheme: 'colosseum-receipt-signature-v1';
+    message: string;
+    messageHash: string;
+  };
+  createdAt: string;
+}
+
+export interface IdempotencyRecord {
+  key: string;
+  agentId: string;
+  requestHash: string;
+  intentId: string;
+  createdAt: string;
+}
+
+export interface MarketPricePoint {
+  ts: string;
+  priceUsd: number;
 }
 
 export interface TreasuryEntry {
@@ -99,14 +152,21 @@ export interface MetricsState {
   riskRejectionsByReason: Record<string, number>;
   lastWorkerRunAt?: string;
   apiPaymentDenials: number;
+  idempotencyReplays: number;
+  receiptCount: number;
+  quoteRetries: number;
 }
 
 export interface AppState {
   agents: Record<string, Agent>;
   tradeIntents: Record<string, TradeIntent>;
   executions: Record<string, ExecutionRecord>;
+  executionReceipts: Record<string, ExecutionReceipt>;
+  latestReceiptHash?: string;
+  idempotencyRecords: Record<string, IdempotencyRecord>;
   treasury: TreasuryState;
   marketPricesUsd: Record<string, number>;
+  marketPriceHistoryUsd: Record<string, MarketPricePoint[]>;
   metrics: MetricsState;
 }
 
@@ -114,4 +174,27 @@ export interface RuntimeMetrics {
   uptimeSeconds: number;
   pendingIntents: number;
   processPid: number;
+}
+
+export interface RiskTelemetry {
+  agentId: string;
+  asOf: string;
+  strategyId: StrategyId;
+  cashUsd: number;
+  equityUsd: number;
+  grossExposureUsd: number;
+  realizedPnlUsd: number;
+  dailyPnlUsd: number;
+  peakEquityUsd: number;
+  drawdownPct: number;
+  rejectCountersByReason: Record<string, number>;
+  globalRejectCountersByReason: Record<string, number>;
+  cooldown: {
+    active: boolean;
+    cooldownSeconds: number;
+    remainingSeconds: number;
+    lastTradeAt?: string;
+    cooldownUntil?: string;
+  };
+  limits: RiskLimits;
 }

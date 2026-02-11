@@ -1,0 +1,23 @@
+{
+  "version": "v1",
+  "paidEndpoints": [
+    {
+      "method": "POST",
+      "pathPrefix": "/trade-intents",
+      "plan": "pro",
+      "description": "Intent submission is paid in production"
+    },
+    {
+      "method": "GET",
+      "pathPrefix": "/executions",
+      "plan": "pro",
+      "description": "Execution feed access"
+    },
+    {
+      "method": "GET",
+      "pathPrefix": "/metrics",
+      "plan": "pro",
+      "description": "Operational metrics and monetization telemetry"
+    }
+  ]
+}

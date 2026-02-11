@@ -1,12 +1,16 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { AppConfig } from '../config.js';
+import { renderExperimentPage } from './experimentPage.js';
 import { FeeEngine } from '../domain/fee/feeEngine.js';
+import { StrategyRegistry } from '../domain/strategy/strategyRegistry.js';
+import { DomainError, ErrorCode, toErrorEnvelope } from '../errors/taxonomy.js';
 import { StateStore } from '../infra/storage/stateStore.js';
 import { AgentService } from '../services/agentService.js';
 import { resolveAgentFromKey } from '../services/auth.js';
 import { ExecutionService } from '../services/executionService.js';
 import { TradeIntentService } from '../services/tradeIntentService.js';
+import { X402Policy } from '../services/x402Policy.js';
 import { RuntimeMetrics } from '../types.js';
 
 interface RouteDeps {
@@ -16,12 +20,15 @@ interface RouteDeps {
   intentService: TradeIntentService;
   executionService: ExecutionService;
   feeEngine: FeeEngine;
+  strategyRegistry: StrategyRegistry;
+  x402Policy: X402Policy;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
 const registerAgentSchema = z.object({
   name: z.string().min(2).max(120),
   startingCapitalUsd: z.number().positive().optional(),
+  strategyId: z.enum(['momentum-v1', 'mean-reversion-v1']).optional(),
   riskOverrides: z.object({
     maxPositionSizePct: z.number().positive().max(1).optional(),
     maxOrderNotionalUsd: z.number().positive().optional(),
@@ -49,39 +56,121 @@ const marketUpdateSchema = z.object({
   priceUsd: z.number().positive(),
 });
 
+const strategyUpdateSchema = z.object({
+  strategyId: z.enum(['momentum-v1', 'mean-reversion-v1']),
+});
+
+const sendDomainError = (reply: FastifyReply, error: unknown): void => {
+  if (error instanceof DomainError) {
+    void reply.code(error.statusCode).send(toErrorEnvelope(error.code, error.message, error.details));
+    return;
+  }
+
+  void reply.code(500).send(toErrorEnvelope(
+    ErrorCode.InternalError,
+    'Unexpected internal error',
+    { error: String(error) },
+  ));
+};
+
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   app.get('/', async () => ({
     name: deps.config.app.name,
-    version: '0.1.0',
+    version: '0.4.0',
     status: 'ok',
     mode: deps.config.trading.defaultMode,
   }));
 
-  app.post('/agents/register', async (request, reply) => {
-    const parse = registerAgentSchema.safeParse(request.body);
-    if (!parse.success) {
-      return reply.code(400).send({ error: 'invalid_payload', details: parse.error.flatten() });
-    }
+  app.get('/experiment', async (_request, reply) => reply
+    .type('text/html; charset=utf-8')
+    .send(renderExperimentPage()));
 
-    const agent = await deps.agentService.register(parse.data);
-
-    return reply.code(201).send({
-      agent: {
+  app.get('/agents', async () => {
+    const state = deps.store.snapshot();
+    const agents = Object.values(state.agents)
+      .map((agent) => ({
         id: agent.id,
         name: agent.name,
         createdAt: agent.createdAt,
-        startingCapitalUsd: agent.startingCapitalUsd,
-        riskLimits: agent.riskLimits,
-      },
-      apiKey: agent.apiKey,
-      note: 'Store apiKey securely. It is required for trade-intent API access.',
-    });
+        updatedAt: agent.updatedAt,
+        strategyId: agent.strategyId,
+      }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+    return { agents };
+  });
+
+  app.get('/strategies', async () => ({
+    strategies: deps.strategyRegistry.list().map((strategy) => ({
+      id: strategy.id,
+      name: strategy.name,
+      description: strategy.description,
+    })),
+  }));
+
+  app.get('/paid-plan/policy', async () => deps.x402Policy);
+
+  app.post('/agents/register', async (request, reply) => {
+    const parse = registerAgentSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid request payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const agent = await deps.agentService.register(parse.data);
+
+      return reply.code(201).send({
+        agent: {
+          id: agent.id,
+          name: agent.name,
+          createdAt: agent.createdAt,
+          startingCapitalUsd: agent.startingCapitalUsd,
+          riskLimits: agent.riskLimits,
+          strategyId: agent.strategyId,
+        },
+        apiKey: agent.apiKey,
+        note: 'Store apiKey securely. It is required for trade-intent API access.',
+      });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.patch('/agents/:agentId/strategy', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = strategyUpdateSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid request payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const agent = await deps.agentService.setStrategy(agentId, parse.data.strategyId);
+      return {
+        agentId: agent.id,
+        strategyId: agent.strategyId,
+        updatedAt: agent.updatedAt,
+      };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 
   app.get('/agents/:agentId', async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
     const agent = deps.agentService.getById(agentId);
-    if (!agent) return reply.code(404).send({ error: 'agent_not_found' });
+    if (!agent) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.AgentNotFound, 'Agent not found.'));
+    }
 
     return {
       id: agent.id,
@@ -94,6 +183,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       peakEquityUsd: agent.peakEquityUsd,
       riskLimits: agent.riskLimits,
       positions: Object.values(agent.positions),
+      strategyId: agent.strategyId,
       lastTradeAt: agent.lastTradeAt,
     };
   });
@@ -102,7 +192,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const { agentId } = request.params as { agentId: string };
     const state = deps.store.snapshot();
     const agent = state.agents[agentId];
-    if (!agent) return reply.code(404).send({ error: 'agent_not_found' });
+    if (!agent) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.AgentNotFound, 'Agent not found.'));
+    }
 
     const markedValue = Object.values(agent.positions).reduce((sum, position) => {
       const px = state.marketPricesUsd[position.symbol] ?? position.avgEntryPriceUsd;
@@ -117,8 +209,23 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       realizedPnlUsd: agent.realizedPnlUsd,
       positions: Object.values(agent.positions),
       marketPricesUsd: state.marketPricesUsd,
+      strategyId: agent.strategyId,
     };
   });
+
+  const serveRiskTelemetry = async (request: { params: { agentId: string } }, reply: FastifyReply) => {
+    const { agentId } = request.params;
+    const telemetry = deps.executionService.getRiskTelemetry(agentId);
+
+    if (!telemetry) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.AgentNotFound, 'Agent not found.'));
+    }
+
+    return telemetry;
+  };
+
+  app.get('/agents/:agentId/risk', async (request, reply) => serveRiskTelemetry(request as { params: { agentId: string } }, reply));
+  app.get('/agents/:agentId/risk-telemetry', async (request, reply) => serveRiskTelemetry(request as { params: { agentId: string } }, reply));
 
   app.post('/trade-intents', async (request, reply) => {
     const auth = resolveAgentFromKey(request, reply, deps.agentService);
@@ -126,36 +233,66 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
     const parse = tradeIntentSchema.safeParse(request.body);
     if (!parse.success) {
-      return reply.code(400).send({ error: 'invalid_payload', details: parse.error.flatten() });
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid request payload.',
+        parse.error.flatten(),
+      ));
     }
 
     if (auth.id !== parse.data.agentId) {
-      return reply.code(403).send({ error: 'agent_key_mismatch' });
+      return reply.code(403).send(toErrorEnvelope(
+        ErrorCode.AgentKeyMismatch,
+        'Provided API key does not belong to the requested agentId.',
+      ));
     }
 
     const symbol = parse.data.symbol.toUpperCase();
     if (!deps.config.trading.supportedSymbols.includes(symbol)) {
-      return reply.code(400).send({
-        error: 'unsupported_symbol',
-        supportedSymbols: deps.config.trading.supportedSymbols,
-      });
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.UnsupportedSymbol,
+        `Unsupported symbol '${symbol}'.`,
+        {
+          supportedSymbols: deps.config.trading.supportedSymbols,
+        },
+      ));
     }
 
-    const intent = await deps.intentService.create({
-      ...parse.data,
-      symbol,
-    });
+    const rawIdempotency = request.headers['x-idempotency-key'] ?? request.headers['idempotency-key'];
+    const idempotencyKey = typeof rawIdempotency === 'string' ? rawIdempotency.trim() : undefined;
 
-    return reply.code(202).send({
-      message: 'intent_queued',
-      intent,
-    });
+    if (idempotencyKey && idempotencyKey.length > 128) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'x-idempotency-key header must be <= 128 characters.',
+      ));
+    }
+
+    try {
+      const result = await deps.intentService.create({
+        ...parse.data,
+        symbol,
+      }, {
+        idempotencyKey,
+      });
+
+      return reply.code(result.replayed ? 200 : 202).send({
+        message: result.replayed ? 'intent_replayed' : 'intent_queued',
+        replayed: result.replayed,
+        intent: result.intent,
+      });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 
   app.get('/trade-intents/:intentId', async (request, reply) => {
     const { intentId } = request.params as { intentId: string };
     const intent = deps.intentService.getById(intentId);
-    if (!intent) return reply.code(404).send({ error: 'intent_not_found' });
+    if (!intent) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.IntentNotFound, 'Trade intent not found.'));
+    }
     return intent;
   });
 
@@ -173,10 +310,38 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     };
   });
 
+  app.get('/executions/:id/receipt', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const receipt = deps.executionService.getReceiptByExecutionId(id);
+    if (!receipt) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.ReceiptNotFound, 'Execution receipt not found.'));
+    }
+
+    return {
+      executionId: id,
+      receipt,
+    };
+  });
+
+  app.get('/receipts/verify/:executionId', async (request, reply) => {
+    const { executionId } = request.params as { executionId: string };
+    const verification = deps.executionService.verifyReceipt(executionId);
+
+    if (!verification) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.ExecutionNotFound, 'Execution or receipt not found.'));
+    }
+
+    return verification;
+  });
+
   app.post('/market/prices', async (request, reply) => {
     const parse = marketUpdateSchema.safeParse(request.body);
     if (!parse.success) {
-      return reply.code(400).send({ error: 'invalid_payload', details: parse.error.flatten() });
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid request payload.',
+        parse.error.flatten(),
+      ));
     }
 
     await deps.executionService.setMarketPrice(parse.data.symbol.toUpperCase(), parse.data.priceUsd);
@@ -203,6 +368,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         agents: Object.keys(state.agents).length,
         intents: Object.keys(state.tradeIntents).length,
         executions: Object.keys(state.executions).length,
+        receipts: Object.keys(state.executionReceipts).length,
       },
     };
   });
@@ -215,7 +381,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       runtime,
       metrics: state.metrics,
       treasury: state.treasury,
-      monetization: deps.feeEngine.describeMonetizationModel(),
+      monetization: {
+        ...deps.feeEngine.describeMonetizationModel(),
+        x402PolicyVersion: deps.x402Policy.version,
+        paidEndpoints: deps.x402Policy.paidEndpoints,
+      },
     };
   });
 
