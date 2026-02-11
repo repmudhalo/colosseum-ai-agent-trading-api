@@ -32,6 +32,11 @@ import { MarketplaceService } from '../services/marketplaceService.js';
 import { AdvancedOrderService } from '../services/advancedOrderService.js';
 import { MessagingService } from '../services/messagingService.js';
 import { MevProtectionService } from '../services/mevProtectionService.js';
+import { JournalService } from '../services/journalService.js';
+import { StrategyCompareService } from '../services/strategyCompareService.js';
+import { PriceOracleService } from '../services/priceOracleService.js';
+import { RebalanceService } from '../services/rebalanceService.js';
+import { AlertService } from '../services/alertService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -65,6 +70,11 @@ interface RouteDeps {
   advancedOrderService: AdvancedOrderService;
   messagingService: MessagingService;
   mevProtectionService: MevProtectionService;
+  journalService: JournalService;
+  strategyCompareService: StrategyCompareService;
+  priceOracleService: PriceOracleService;
+  rebalanceService: RebalanceService;
+  alertService: AlertService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -1241,6 +1251,181 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   app.get('/mev/stats', async () => deps.mevProtectionService.getMevStats());
+
+  // ─── Journal endpoints ─────────────────────────────────────────────
+
+  app.get('/agents/:agentId/journal', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { type?: string; limit?: string; offset?: string };
+
+    const opts: { type?: string; limit?: number; offset?: number } = {};
+    if (query.type) opts.type = query.type;
+    if (query.limit) opts.limit = Number(query.limit);
+    if (query.offset) opts.offset = Number(query.offset);
+
+    const result = deps.journalService.getJournal(agentId, opts as any);
+    return result;
+  });
+
+  app.get('/agents/:agentId/journal/stats', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.journalService.getJournalStats(agentId);
+  });
+
+  app.get('/agents/:agentId/journal/export', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { entries: deps.journalService.exportJournal(agentId) };
+  });
+
+  // ─── Strategy Comparison endpoints ────────────────────────────────
+
+  const strategyCompareSchema = z.object({
+    strategyIds: z.array(z.string().min(1)).min(2),
+    priceHistory: z.array(z.number()).min(2),
+    capitalUsd: z.number().positive(),
+  });
+
+  app.post('/strategies/compare', async (request, reply) => {
+    const parse = strategyCompareSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid comparison payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.strategyCompareService.compareStrategies(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Price Oracle endpoints ─────────────────────────────────────────
+
+  app.get('/oracle/prices', async () => ({
+    prices: deps.priceOracleService.getAllPrices(),
+  }));
+
+  app.get('/oracle/prices/:symbol', async (request) => {
+    const { symbol } = request.params as { symbol: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 100) : undefined;
+    const price = deps.priceOracleService.getCurrentPrice(symbol);
+    return {
+      price,
+      history: deps.priceOracleService.getPriceHistory(symbol, limit),
+    };
+  });
+
+  app.get('/oracle/status', async () => deps.priceOracleService.getOracleStatus());
+
+  // ─── Rebalance endpoints ──────────────────────────────────────────────
+
+  const targetAllocationSchema = z.object({
+    allocations: z.record(z.string(), z.number().min(0).max(1)),
+  });
+
+  app.post('/agents/:agentId/rebalance/target', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = targetAllocationSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid target allocation payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const allocation = deps.rebalanceService.setTargetAllocation(agentId, parse.data.allocations);
+      return { agentId, allocation };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/rebalance/status', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.rebalanceService.getRebalanceStatus(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.post('/agents/:agentId/rebalance/execute', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.rebalanceService.executeRebalance(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Alert endpoints ──────────────────────────────────────────────────
+
+  const createAlertSchema = z.object({
+    agentId: z.string().min(2),
+    type: z.enum(['price-above', 'price-below', 'drawdown-exceeded', 'execution-completed', 'risk-breach']),
+    config: z.object({
+      symbol: z.string().min(1).optional(),
+      priceUsd: z.number().positive().optional(),
+      drawdownPct: z.number().min(0).max(1).optional(),
+      executionId: z.string().min(1).optional(),
+      riskMetric: z.string().min(1).optional(),
+      riskThreshold: z.number().optional(),
+    }),
+  });
+
+  app.post('/alerts', async (request, reply) => {
+    const parse = createAlertSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid alert payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const alert = deps.alertService.createAlert(
+        parse.data.agentId,
+        parse.data.type,
+        parse.data.config,
+      );
+      return reply.code(201).send({ alert });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/alerts/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { alerts: deps.alertService.getAlerts(agentId) };
+  });
+
+  app.delete('/alerts/:alertId', async (request, reply) => {
+    const { alertId } = request.params as { alertId: string };
+    try {
+      return deps.alertService.deleteAlert(alertId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/alerts/:agentId/history', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return { history: deps.alertService.getHistory(agentId) };
+  });
 
   app.get('/state', async () => deps.store.snapshot());
 }

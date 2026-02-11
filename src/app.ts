@@ -32,6 +32,11 @@ import { MarketplaceService } from './services/marketplaceService.js';
 import { AdvancedOrderService } from './services/advancedOrderService.js';
 import { MessagingService } from './services/messagingService.js';
 import { MevProtectionService } from './services/mevProtectionService.js';
+import { JournalService } from './services/journalService.js';
+import { StrategyCompareService } from './services/strategyCompareService.js';
+import { PriceOracleService } from './services/priceOracleService.js';
+import { RebalanceService } from './services/rebalanceService.js';
+import { AlertService } from './services/alertService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -110,6 +115,11 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const advancedOrderService = new AdvancedOrderService(stateStore);
   const messagingService = new MessagingService(stateStore);
   const mevProtectionService = new MevProtectionService(stateStore);
+  const journalService = new JournalService();
+  const strategyCompareService = new StrategyCompareService(backtestService);
+  const priceOracleService = new PriceOracleService(stateStore);
+  const rebalanceService = new RebalanceService(stateStore);
+  const alertService = new AlertService(stateStore);
 
   // Wire messaging service to coordination service for squad member lookup
   messagingService.setSquadMemberLookup((squadId: string) => {
@@ -149,6 +159,11 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     advancedOrderService,
     messagingService,
     mevProtectionService,
+    journalService,
+    strategyCompareService,
+    priceOracleService,
+    rebalanceService,
+    alertService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

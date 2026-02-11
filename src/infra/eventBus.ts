@@ -19,7 +19,11 @@ export type EventType =
   | 'order.cancelled'
   | 'message.sent'
   | 'message.squad.broadcast'
-  | 'mev.analyzed';
+  | 'mev.analyzed'
+  | 'journal.entry'
+  | 'alert.created'
+  | 'alert.triggered'
+  | 'alert.deleted';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 
