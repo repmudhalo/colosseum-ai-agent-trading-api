@@ -711,9 +711,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
   // ─── Skills endpoints ─────────────────────────────────────────────────
 
-  app.get('/skills', async () => ({
-    skills: deps.skillRegistry.listAll(),
-  }));
+  // Note: GET /skills is registered below with marketplace filtering support
 
   app.get('/agents/:agentId/skills', async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
@@ -2021,7 +2019,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  app.get('/skills', async (request) => {
+  app.get('/skills/marketplace', async (request) => {
     const query = request.query as {
       category?: string;
       minRating?: string;

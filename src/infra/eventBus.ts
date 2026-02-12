@@ -36,7 +36,13 @@ export type EventType =
   | 'social.unfollowed'
   | 'pyth.price.updated'
   | 'sandbox.created'
-  | 'sandbox.completed';
+  | 'sandbox.completed'
+  | 'collaboration.proposed'
+  | 'collaboration.accepted'
+  | 'collaboration.rejected'
+  | 'collaboration.terminated'
+  | 'collaboration.signal'
+  | 'stress-test.completed';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 
