@@ -67,6 +67,8 @@ import { LiquidityAnalysisService } from '../services/liquidityAnalysisService.j
 import { PortfolioAnalyticsService } from '../services/portfolioAnalyticsService.js';
 import { AgentMarketplaceService } from '../services/agentMarketplaceService.js';
 import { ComplianceService } from '../services/complianceService.js';
+import { BridgeMonitorService } from '../services/bridgeMonitorService.js';
+import { TelemetryService } from '../services/telemetryService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -134,6 +136,8 @@ interface RouteDeps {
   portfolioAnalyticsService: PortfolioAnalyticsService;
   agentMarketplaceService: AgentMarketplaceService;
   complianceService: ComplianceService;
+  bridgeMonitorService: BridgeMonitorService;
+  telemetryService: TelemetryService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -3164,6 +3168,67 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       violations,
     };
   });
+
+  // ─── Bridge Monitor endpoints ────────────────────────────────────────
+
+  app.get('/bridge/status', async () => ({
+    bridges: deps.bridgeMonitorService.getAllBridgeHealth(),
+  }));
+
+  const trackBridgeTxSchema = z.object({
+    provider: z.enum(['wormhole', 'debridge', 'allbridge']),
+    sourceTxHash: z.string().min(1).max(256),
+    sourceChain: z.enum(['solana', 'ethereum', 'bsc', 'polygon', 'avalanche', 'arbitrum', 'optimism']),
+    destChain: z.enum(['solana', 'ethereum', 'bsc', 'polygon', 'avalanche', 'arbitrum', 'optimism']),
+    token: z.string().min(1).max(20),
+    amountUsd: z.number().positive(),
+    agentId: z.string().min(1).optional(),
+  });
+
+  app.post('/bridge/track', async (request, reply) => {
+    const parse = trackBridgeTxSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid bridge tracking payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const tx = deps.bridgeMonitorService.trackTransaction(parse.data);
+      return reply.code(201).send({ transaction: tx });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/bridge/opportunities', async (request) => {
+    const query = request.query as { viableOnly?: string };
+    const viableOnly = query.viableOnly === 'true';
+    return {
+      opportunities: deps.bridgeMonitorService.getOpportunities(viableOnly),
+    };
+  });
+
+  app.get('/bridge/fees/:pair', async (request) => {
+    const { pair } = request.params as { pair: string };
+    const query = request.query as { token?: string; amount?: string };
+    const [sourceChain, destChain] = pair.split('-') as [string, string];
+    const token = query.token ?? 'USDC';
+    const amount = query.amount ? Number(query.amount) : 1000;
+    return deps.bridgeMonitorService.compareFees(
+      sourceChain as any,
+      destChain as any,
+      token,
+      amount,
+    );
+  });
+
+  app.get('/bridge/risk', async () => ({
+    riskScores: deps.bridgeMonitorService.getRiskScores(),
+  }));
 
   app.get('/state', async () => deps.store.snapshot());
 }

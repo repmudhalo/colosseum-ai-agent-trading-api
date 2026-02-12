@@ -66,6 +66,7 @@ import { LiquidityAnalysisService } from './services/liquidityAnalysisService.js
 import { AgentMarketplaceService } from './services/agentMarketplaceService.js';
 import { PortfolioAnalyticsService } from './services/portfolioAnalyticsService.js';
 import { ComplianceService } from './services/complianceService.js';
+import { BridgeMonitorService } from './services/bridgeMonitorService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -178,6 +179,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const portfolioAnalyticsService = new PortfolioAnalyticsService(stateStore);
   const agentMarketplaceService = new AgentMarketplaceService(stateStore);
   const complianceService = new ComplianceService(stateStore);
+  const bridgeMonitorService = new BridgeMonitorService();
 
   // Start notification listener
   notificationService.startListening();
@@ -258,6 +260,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     portfolioAnalyticsService,
     agentMarketplaceService,
     complianceService,
+    bridgeMonitorService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
