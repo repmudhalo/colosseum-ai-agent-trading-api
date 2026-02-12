@@ -58,6 +58,8 @@ import { ExecutionAnalyticsService } from './services/executionAnalyticsService.
 import { CollaborationService } from './services/collaborationService.js';
 import { StressTestService } from './services/stressTestService.js';
 import { DefiHealthScoreService } from './services/defiHealthScoreService.js';
+import { BacktestV2Service } from './services/backtestV2Service.js';
+import { AgentLearningService } from './services/agentLearningService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -162,6 +164,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const collaborationService = new CollaborationService(stateStore);
   const stressTestService = new StressTestService(stateStore);
   const defiHealthScoreService = new DefiHealthScoreService(stateStore);
+  const backtestV2Service = new BacktestV2Service(strategyRegistry);
+  const agentLearningService = new AgentLearningService(stateStore);
 
   // Start notification listener
   notificationService.startListening();
@@ -234,6 +238,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     collaborationService,
     stressTestService,
     defiHealthScoreService,
+    backtestV2Service,
+    agentLearningService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

@@ -59,6 +59,8 @@ import { ExecutionAnalyticsService } from '../services/executionAnalyticsService
 import { CollaborationService } from '../services/collaborationService.js';
 import { StressTestService } from '../services/stressTestService.js';
 import { DefiHealthScoreService } from '../services/defiHealthScoreService.js';
+import { BacktestV2Service } from '../services/backtestV2Service.js';
+import { AgentLearningService } from '../services/agentLearningService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -118,6 +120,8 @@ interface RouteDeps {
   collaborationService: CollaborationService;
   stressTestService: StressTestService;
   defiHealthScoreService: DefiHealthScoreService;
+  backtestV2Service: BacktestV2Service;
+  agentLearningService: AgentLearningService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -2354,6 +2358,214 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const query = request.query as { limit?: string };
     const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 500) : 50;
     return { agentId, history: deps.defiHealthScoreService.getHealthHistory(agentId, limit) };
+  });
+
+  // ─── Backtest V2 endpoints ──────────────────────────────────────────
+
+  const backtestV2Schema = z.object({
+    strategyId: z.string().min(1),
+    symbol: z.string().min(2).max(20),
+    priceHistory: z.array(z.number()),
+    startingCapitalUsd: z.number().positive(),
+    riskOverrides: z.object({
+      maxPositionSizePct: z.number().positive().max(1).optional(),
+      maxOrderNotionalUsd: z.number().positive().optional(),
+      maxGrossExposureUsd: z.number().positive().optional(),
+      dailyLossCapUsd: z.number().positive().optional(),
+      maxDrawdownPct: z.number().positive().max(1).optional(),
+      cooldownSeconds: z.number().nonnegative().optional(),
+    }).partial().optional(),
+  });
+
+  app.post('/backtest/v2', async (request, reply) => {
+    const parse = backtestV2Schema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid backtest V2 payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.backtestV2Service.run(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const backtestV2OptimizeSchema = z.object({
+    strategyId: z.string().min(1),
+    symbol: z.string().min(2).max(20),
+    priceHistory: z.array(z.number()),
+    startingCapitalUsd: z.number().positive(),
+    parameterRanges: z.array(z.object({
+      name: z.string().min(1),
+      min: z.number(),
+      max: z.number(),
+      step: z.number().positive(),
+    })).min(1),
+    optimizeFor: z.enum(['sharpe', 'return', 'calmar']).optional(),
+    riskOverrides: z.object({
+      maxPositionSizePct: z.number().positive().max(1).optional(),
+      maxOrderNotionalUsd: z.number().positive().optional(),
+      maxGrossExposureUsd: z.number().positive().optional(),
+      dailyLossCapUsd: z.number().positive().optional(),
+      maxDrawdownPct: z.number().positive().max(1).optional(),
+      cooldownSeconds: z.number().nonnegative().optional(),
+    }).partial().optional(),
+  });
+
+  app.post('/backtest/v2/optimize', async (request, reply) => {
+    const parse = backtestV2OptimizeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid optimization payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.backtestV2Service.optimize(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const backtestV2MonteCarloSchema = z.object({
+    strategyId: z.string().min(1),
+    symbol: z.string().min(2).max(20),
+    priceHistory: z.array(z.number()),
+    startingCapitalUsd: z.number().positive(),
+    simulations: z.number().int().min(10).max(100_000).optional(),
+    confidenceLevel: z.number().min(0.01).max(0.99).optional(),
+    riskOverrides: z.object({
+      maxPositionSizePct: z.number().positive().max(1).optional(),
+      maxOrderNotionalUsd: z.number().positive().optional(),
+      maxGrossExposureUsd: z.number().positive().optional(),
+      dailyLossCapUsd: z.number().positive().optional(),
+      maxDrawdownPct: z.number().positive().max(1).optional(),
+      cooldownSeconds: z.number().nonnegative().optional(),
+    }).partial().optional(),
+  });
+
+  app.post('/backtest/v2/monte-carlo', async (request, reply) => {
+    const parse = backtestV2MonteCarloSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid Monte Carlo payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.backtestV2Service.monteCarlo(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const backtestV2CompareSchema = z.object({
+    strategyA: z.object({
+      strategyId: z.string().min(1),
+      label: z.string().max(100).optional(),
+    }),
+    strategyB: z.object({
+      strategyId: z.string().min(1),
+      label: z.string().max(100).optional(),
+    }),
+    symbol: z.string().min(2).max(20),
+    priceHistory: z.array(z.number()),
+    startingCapitalUsd: z.number().positive(),
+    riskOverrides: z.object({
+      maxPositionSizePct: z.number().positive().max(1).optional(),
+      maxOrderNotionalUsd: z.number().positive().optional(),
+      maxGrossExposureUsd: z.number().positive().optional(),
+      dailyLossCapUsd: z.number().positive().optional(),
+      maxDrawdownPct: z.number().positive().max(1).optional(),
+      cooldownSeconds: z.number().nonnegative().optional(),
+    }).partial().optional(),
+  });
+
+  app.post('/backtest/v2/compare', async (request, reply) => {
+    const parse = backtestV2CompareSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid comparison payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.backtestV2Service.compare(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Agent Learning & Memory endpoints ─────────────────────────────────
+
+  app.get('/agents/:agentId/learning/patterns', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentLearningService.analyzePatterns(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/learning/regime', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { symbol?: string };
+    const symbol = query.symbol ?? 'SOL';
+    try {
+      return deps.agentLearningService.detectRegime(symbol);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.post('/agents/:agentId/learning/adapt', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentLearningService.adaptParameters(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/learning/confidence/:symbol', async (request, reply) => {
+    const { agentId, symbol } = request.params as { agentId: string; symbol: string };
+    try {
+      return deps.agentLearningService.scoreConfidence(agentId, symbol);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/learning/metrics', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentLearningService.getLearningMetrics(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 
   app.get('/state', async () => deps.store.snapshot());
