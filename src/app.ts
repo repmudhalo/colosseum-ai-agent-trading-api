@@ -63,6 +63,10 @@ import { AgentLearningService } from './services/agentLearningService.js';
 import { AgentPersonalityService } from './services/agentPersonalityService.js';
 import { GasOptimizationService } from './services/gasOptimizationService.js';
 import { LiquidityAnalysisService } from './services/liquidityAnalysisService.js';
+import { AgentMarketplaceService } from './services/agentMarketplaceService.js';
+import { ComplianceService } from './services/complianceService.js';
+import { PortfolioAnalyticsService } from './services/portfolioAnalyticsService.js';
+import { ComplianceService } from './services/complianceService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -172,6 +176,10 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const agentPersonalityService = new AgentPersonalityService(stateStore);
   const gasOptimizationService = new GasOptimizationService(stateStore);
   const liquidityAnalysisService = new LiquidityAnalysisService(stateStore);
+  const portfolioAnalyticsService = new PortfolioAnalyticsService(stateStore);
+  const agentMarketplaceService = new AgentMarketplaceService(stateStore);
+  const complianceService = new ComplianceService(stateStore);
+  const complianceService = new ComplianceService(stateStore);
 
   // Start notification listener
   notificationService.startListening();
@@ -249,6 +257,9 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     agentPersonalityService,
     gasOptimizationService,
     liquidityAnalysisService,
+    portfolioAnalyticsService,
+    agentMarketplaceService,
+    complianceService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

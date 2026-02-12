@@ -64,6 +64,9 @@ import { AgentLearningService } from '../services/agentLearningService.js';
 import { AgentPersonalityService } from '../services/agentPersonalityService.js';
 import { GasOptimizationService } from '../services/gasOptimizationService.js';
 import { LiquidityAnalysisService } from '../services/liquidityAnalysisService.js';
+import { PortfolioAnalyticsService } from '../services/portfolioAnalyticsService.js';
+import { AgentMarketplaceService } from '../services/agentMarketplaceService.js';
+import { ComplianceService } from '../services/complianceService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -128,6 +131,9 @@ interface RouteDeps {
   agentPersonalityService: AgentPersonalityService;
   gasOptimizationService: GasOptimizationService;
   liquidityAnalysisService: LiquidityAnalysisService;
+  portfolioAnalyticsService: PortfolioAnalyticsService;
+  agentMarketplaceService: AgentMarketplaceService;
+  complianceService: ComplianceService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -2799,6 +2805,364 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       sendDomainError(reply, error);
       return undefined;
     }
+  });
+
+  // ─── Portfolio Analytics Dashboard endpoints ──────────────────────
+
+  app.get('/agents/:agentId/analytics/var', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { confidence?: string };
+    const confidence = query.confidence ? Number(query.confidence) : 0.95;
+    try {
+      return deps.portfolioAnalyticsService.computeVaR(agentId, confidence);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/analytics/greeks', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.portfolioAnalyticsService.computeGreeks(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/analytics/correlation', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.portfolioAnalyticsService.computeCorrelation(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/analytics/attribution', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.portfolioAnalyticsService.computeAttribution(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/analytics/rolling-sharpe', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { window?: string };
+    const windowDays = query.window ? Math.max(2, Math.min(365, Number(query.window))) : 30;
+    try {
+      return deps.portfolioAnalyticsService.computeRollingSharpe(agentId, windowDays);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ── Agent Marketplace & Reputation V2 ─────────────────────────────
+
+  app.get('/agent-marketplace/services', async (request) => {
+    const query = request.query as {
+      category?: string;
+      agentId?: string;
+      minReputation?: string;
+    };
+    return {
+      services: deps.agentMarketplaceService.listServices({
+        category: query.category as any,
+        agentId: query.agentId,
+        minReputation: query.minReputation ? Number(query.minReputation) : undefined,
+      }),
+    };
+  });
+
+  const createAgentMarketplaceServiceSchema = z.object({
+    agentId: z.string().min(1),
+    name: z.string().min(1).max(200),
+    description: z.string().min(1).max(2000),
+    category: z.enum([
+      'signal-provider', 'strategy-execution', 'market-analysis',
+      'risk-assessment', 'portfolio-management', 'data-feed',
+      'arbitrage-detection', 'sentiment-analysis',
+    ]),
+    capabilities: z.array(z.object({
+      name: z.string().min(1),
+      description: z.string().min(1),
+      category: z.enum([
+        'signal-provider', 'strategy-execution', 'market-analysis',
+        'risk-assessment', 'portfolio-management', 'data-feed',
+        'arbitrage-detection', 'sentiment-analysis',
+      ]),
+    })).min(1),
+    priceUsd: z.number(),
+    pricingModel: z.enum(['per-signal', 'subscription', 'performance-fee']),
+    performanceFeePct: z.number().min(0).max(100).optional(),
+    collaborators: z.array(z.object({
+      agentId: z.string().min(1),
+      splitPct: z.number().min(0).max(100),
+    })).optional(),
+  });
+
+  app.post('/agent-marketplace/services', async (request, reply) => {
+    const parse = createAgentMarketplaceServiceSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid agent marketplace service payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const service = deps.agentMarketplaceService.registerService(parse.data);
+      return reply.code(201).send({ service });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const agentMarketplaceReviewSchema = z.object({
+    reviewerId: z.string().min(1),
+    rating: z.number().int().min(1).max(5),
+    comment: z.string().min(1).max(2000),
+  });
+
+  app.post('/agent-marketplace/services/:id/review', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = agentMarketplaceReviewSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid review payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const review = deps.agentMarketplaceService.reviewService(id, parse.data);
+      return reply.code(201).send({ review });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agent-marketplace/disputes', async (request) => {
+    const query = request.query as {
+      serviceId?: string;
+      status?: string;
+      agentId?: string;
+    };
+    return {
+      disputes: deps.agentMarketplaceService.listDisputes({
+        serviceId: query.serviceId,
+        status: query.status as any,
+        agentId: query.agentId,
+      }),
+    };
+  });
+
+  const createAgentMarketplaceDisputeSchema = z.object({
+    serviceId: z.string().min(1),
+    complainantId: z.string().min(1),
+    reason: z.string().min(1).max(2000),
+    evidence: z.string().max(5000).optional(),
+  });
+
+  app.post('/agent-marketplace/disputes', async (request, reply) => {
+    const parse = createAgentMarketplaceDisputeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid dispute payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const dispute = deps.agentMarketplaceService.raiseDispute(parse.data);
+      return reply.code(201).send({ dispute });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const resolveAgentMarketplaceDisputeSchema = z.object({
+    resolution: z.string().min(1).max(2000),
+    refundPct: z.number().min(0).max(100).optional(),
+  });
+
+  app.post('/agent-marketplace/disputes/:id/resolve', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = resolveAgentMarketplaceDisputeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid resolve payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const dispute = deps.agentMarketplaceService.resolveDispute(id, parse.data);
+      return reply.code(200).send({ dispute });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agent-marketplace/leaderboard', async (request) => {
+    const query = request.query as { sortBy?: string; limit?: string };
+    const sortBy = (query.sortBy as any) || 'overall';
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 50;
+    return { leaderboard: deps.agentMarketplaceService.leaderboard(sortBy, limit) };
+  });
+
+  // ─── Compliance & Audit endpoints ─────────────────────────────────────
+
+  app.get('/compliance/audit-log', async (request) => {
+    const query = request.query as {
+      agentId?: string;
+      action?: string;
+      startDate?: string;
+      endDate?: string;
+      limit?: string;
+      offset?: string;
+    };
+
+    return deps.complianceService.getAuditLog({
+      agentId: query.agentId,
+      action: query.action,
+      startDate: query.startDate,
+      endDate: query.endDate,
+      limit: query.limit ? Math.min(Math.max(Number(query.limit), 1), 500) : undefined,
+      offset: query.offset ? Number(query.offset) : undefined,
+    });
+  });
+
+  app.get('/compliance/audit-log/verify', async () =>
+    deps.complianceService.verifyAuditIntegrity(),
+  );
+
+  app.get('/compliance/report/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { period?: string };
+    const period = query.period === 'weekly' ? 'weekly' : 'daily';
+    return deps.complianceService.generateReport(agentId, period);
+  });
+
+  const complianceRuleSchema = z.object({
+    type: z.enum(['max-daily-volume', 'restricted-token', 'trading-hours', 'max-single-trade', 'max-daily-trades', 'custom']),
+    name: z.string().min(2).max(200),
+    description: z.string().min(2).max(2000),
+    params: z.record(z.string(), z.unknown()),
+    enabled: z.boolean().optional(),
+  });
+
+  app.post('/compliance/rules', async (request, reply) => {
+    const parse = complianceRuleSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid compliance rule payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const rule = deps.complianceService.addRule(parse.data);
+      return reply.code(201).send({ rule });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/compliance/rules', async () => ({
+    rules: deps.complianceService.listRules(),
+  }));
+
+  app.get('/compliance/suspicious/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { detect?: string };
+
+    if (query.detect === 'true') {
+      const detected = deps.complianceService.detectSuspiciousActivity(agentId);
+      return { agentId, newlyDetected: detected, all: deps.complianceService.getSuspiciousActivities(agentId) };
+    }
+
+    return { agentId, activities: deps.complianceService.getSuspiciousActivities(agentId) };
+  });
+
+  app.get('/compliance/export/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { format?: string };
+    const format = query.format === 'csv' ? 'csv' : 'json';
+    return deps.complianceService.exportRegulatoryData(agentId, format);
+  });
+
+  app.get('/agents/:agentId/kyc', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.complianceService.getKycStatus(agentId);
+  });
+
+  const kycUpdateSchema = z.object({
+    status: z.enum(['pending', 'verified', 'rejected', 'expired', 'not_started']).optional(),
+    level: z.number().int().min(0).max(3).optional(),
+    documents: z.array(z.string()).optional(),
+    rejectionReason: z.string().nullable().optional(),
+  });
+
+  app.put('/agents/:agentId/kyc', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = kycUpdateSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid KYC update payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const record = deps.complianceService.updateKycStatus(agentId, parse.data);
+      return record;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const complianceCheckSchema = z.object({
+    agentId: z.string().min(2),
+    symbol: z.string().min(1).max(20),
+    side: z.enum(['buy', 'sell']),
+    notionalUsd: z.number().positive(),
+  });
+
+  app.post('/compliance/check', async (request, reply) => {
+    const parse = complianceCheckSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid compliance check payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    const violations = deps.complianceService.evaluateRules(parse.data.agentId, {
+      symbol: parse.data.symbol,
+      side: parse.data.side,
+      notionalUsd: parse.data.notionalUsd,
+    });
+
+    return {
+      compliant: violations.length === 0,
+      violations,
+    };
   });
 
   app.get('/state', async () => deps.store.snapshot());
