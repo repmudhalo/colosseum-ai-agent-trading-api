@@ -30,6 +30,9 @@ export const ErrorCode = {
   SkillNotFound: 'skill_not_found',
   CollaborationNotFound: 'collaboration_not_found',
   StressTestNotFound: 'stress_test_not_found',
+  TokenLaunchNotFound: 'token_launch_not_found',
+  CommChannelNotFound: 'comm_channel_not_found',
+  CommMessageNotFound: 'comm_message_not_found',
   InternalError: 'internal_error',
 } as const;
 

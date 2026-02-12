@@ -70,6 +70,9 @@ import { ComplianceService } from '../services/complianceService.js';
 import { SmartOrderRouterService } from '../services/smartOrderRouterService.js';
 import { BridgeMonitorService } from '../services/bridgeMonitorService.js';
 import { TelemetryService } from '../services/telemetryService.js';
+import { TokenLaunchService } from '../services/tokenLaunchService.js';
+import { AgentCommService } from '../services/agentCommService.js';
+import { RiskScenarioService } from '../services/riskScenarioService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -140,6 +143,9 @@ interface RouteDeps {
   smartOrderRouterService: SmartOrderRouterService;
   bridgeMonitorService: BridgeMonitorService;
   telemetryService: TelemetryService;
+  tokenLaunchService: TokenLaunchService;
+  agentCommService: AgentCommService;
+  riskScenarioService: RiskScenarioService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -3428,5 +3434,369 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
     const record = deps.telemetryService.recordMetric(parse.data);
     return reply.code(201).send({ record });
+  });
+
+  // ─── Token Launch & Bonding Curve endpoints ──────────────────────────
+
+  const tokenLaunchCreateSchema = z.object({
+    name: z.string().min(2).max(120),
+    symbol: z.string().min(2).max(12),
+    maxSupply: z.number().positive(),
+    initialPrice: z.number().positive(),
+    curveParams: z.object({
+      type: z.enum(['linear', 'exponential', 'sigmoid']),
+      slope: z.number(),
+      midpoint: z.number().min(0).max(1).optional(),
+    }),
+    creatorId: z.string().min(1).optional(),
+  });
+
+  app.post('/token-launch/create', async (request, reply) => {
+    const parse = tokenLaunchCreateSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid token launch payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const launch = deps.tokenLaunchService.createLaunch(parse.data);
+      return reply.code(201).send({ launch });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/token-launch/list', async () => ({
+    launches: deps.tokenLaunchService.listLaunches(),
+  }));
+
+  app.get('/token-launch/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const launch = deps.tokenLaunchService.getLaunch(id);
+    if (!launch) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.TokenLaunchNotFound, 'Token launch not found.'));
+    }
+    return { launch };
+  });
+
+  const tokenLaunchBuySchema = z.object({
+    buyerId: z.string().min(1),
+    quantity: z.number().positive(),
+  });
+
+  app.post('/token-launch/:id/buy', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = tokenLaunchBuySchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid buy payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.tokenLaunchService.buy(id, parse.data.buyerId, parse.data.quantity);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const tokenLaunchSellSchema = z.object({
+    sellerId: z.string().min(1),
+    quantity: z.number().positive(),
+  });
+
+  app.post('/token-launch/:id/sell', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = tokenLaunchSellSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid sell payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.tokenLaunchService.sell(id, parse.data.sellerId, parse.data.quantity);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/token-launch/:id/analytics', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const analytics = deps.tokenLaunchService.getAnalytics(id);
+      return { analytics };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Agent Communication Protocol endpoints ──────────────────────────
+
+  const commSendSchema = z.object({
+    from: z.string().min(2),
+    to: z.string().min(2).optional(),
+    channelId: z.string().min(1).optional(),
+    type: z.enum(['signal', 'trade-proposal', 'market-update', 'alert', 'chat']),
+    subject: z.string().min(1).max(500),
+    body: z.string().min(1).max(10_000),
+    encrypt: z.boolean().optional(),
+    threadId: z.string().min(1).optional(),
+    parentMessageId: z.string().min(1).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  });
+
+  app.post('/comm/send', async (request, reply) => {
+    const parse = commSendSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid comm message payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const message = deps.agentCommService.sendMessage(parse.data);
+      return reply.code(201).send({ message });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/comm/inbox/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 50;
+    return { messages: deps.agentCommService.getInbox(agentId, limit) };
+  });
+
+  const commCreateChannelSchema = z.object({
+    name: z.string().min(2).max(200),
+    description: z.string().min(0).max(2000).optional(),
+    type: z.enum(['broadcast', 'group', 'direct']),
+    creatorId: z.string().min(2),
+    allowedMessageTypes: z.array(z.enum(['signal', 'trade-proposal', 'market-update', 'alert', 'chat'])).optional(),
+  });
+
+  app.post('/comm/channels', async (request, reply) => {
+    const parse = commCreateChannelSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid channel payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const channel = deps.agentCommService.createChannel(parse.data);
+      return reply.code(201).send({ channel });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/comm/channels', async () => ({
+    channels: deps.agentCommService.listChannels(),
+  }));
+
+  const commSubscribeSchema = z.object({
+    agentId: z.string().min(2),
+  });
+
+  app.post('/comm/channels/:id/subscribe', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = commSubscribeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid subscribe payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const channel = deps.agentCommService.subscribeToChannel(id, parse.data.agentId);
+      return { channel };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/comm/channels/:id/messages', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 50;
+
+    try {
+      return { messages: deps.agentCommService.getChannelMessages(id, limit) };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const commAckSchema = z.object({
+    agentId: z.string().min(2),
+  });
+
+  app.post('/comm/messages/:id/ack', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = commAckSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid ack payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const message = deps.agentCommService.acknowledgeMessage(id, parse.data.agentId);
+      return { message };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  // ─── Risk Scenario Simulator ─────────────────────────────────────────
+
+  app.get('/risk-scenarios/prebuilt', async () => ({
+    scenarios: deps.riskScenarioService.listPrebuiltScenarios(),
+  }));
+
+  const riskSimulateSchema = z.object({
+    scenarioId: z.string().min(1),
+    portfolio: z.object({
+      positions: z.record(z.string(), z.object({
+        symbol: z.string(),
+        quantity: z.number(),
+        avgEntryPriceUsd: z.number(),
+      })),
+      cashUsd: z.number(),
+      marketPrices: z.record(z.string(), z.number()),
+    }),
+  });
+
+  app.post('/risk-scenarios/simulate', async (request, reply) => {
+    const parse = riskSimulateSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid simulation payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const result = deps.riskScenarioService.simulateScenario(parse.data.scenarioId, parse.data.portfolio);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const riskCustomSchema = z.object({
+    scenario: z.object({
+      name: z.string().min(1),
+      description: z.string().optional(),
+      assetShocks: z.record(z.string(), z.number()),
+      volatilityMultiplier: z.number().optional(),
+      liquidityDrainPct: z.number().optional(),
+      durationTicks: z.number().int().positive().optional(),
+    }),
+    portfolio: z.object({
+      positions: z.record(z.string(), z.object({
+        symbol: z.string(),
+        quantity: z.number(),
+        avgEntryPriceUsd: z.number(),
+      })),
+      cashUsd: z.number(),
+      marketPrices: z.record(z.string(), z.number()),
+    }),
+  });
+
+  app.post('/risk-scenarios/custom', async (request, reply) => {
+    const parse = riskCustomSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid custom scenario payload.',
+        parse.error.flatten(),
+      ));
+    }
+    try {
+      const result = deps.riskScenarioService.simulateCustomScenario(parse.data.scenario, parse.data.portfolio);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const monteCarloSchema = z.object({
+    positions: z.record(z.string(), z.object({
+      symbol: z.string(),
+      quantity: z.number(),
+      avgEntryPriceUsd: z.number(),
+    })),
+    cashUsd: z.number(),
+    marketPrices: z.record(z.string(), z.number()),
+    numSimulations: z.number().int().positive().optional(),
+    numTicks: z.number().int().positive().optional(),
+    annualVolatility: z.number().positive().optional(),
+  });
+
+  app.post('/risk-scenarios/monte-carlo', async (request, reply) => {
+    const parse = monteCarloSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid Monte Carlo payload.',
+        parse.error.flatten(),
+      ));
+    }
+    const result = deps.riskScenarioService.runMonteCarlo(parse.data);
+    return { result };
+  });
+
+  app.get('/risk-scenarios/tail-risk/:agentId', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      const result = deps.riskScenarioService.analyzeTailRisk(agentId);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/risk-scenarios/recovery/:agentId', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      const result = deps.riskScenarioService.estimateRecovery(agentId);
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 }

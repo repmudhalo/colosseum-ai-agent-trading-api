@@ -42,7 +42,12 @@ export type EventType =
   | 'collaboration.rejected'
   | 'collaboration.terminated'
   | 'collaboration.signal'
-  | 'stress-test.completed';
+  | 'stress-test.completed'
+  | 'comm.message.sent'
+  | 'comm.message.acknowledged'
+  | 'comm.channel.created'
+  | 'comm.channel.subscribed'
+  | 'comm.channel.unsubscribed';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 

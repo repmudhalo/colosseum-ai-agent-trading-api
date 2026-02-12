@@ -69,6 +69,9 @@ import { ComplianceService } from './services/complianceService.js';
 import { BridgeMonitorService } from './services/bridgeMonitorService.js';
 import { SmartOrderRouterService } from './services/smartOrderRouterService.js';
 import { TelemetryService } from './services/telemetryService.js';
+import { TokenLaunchService } from './services/tokenLaunchService.js';
+import { AgentCommService } from './services/agentCommService.js';
+import { RiskScenarioService } from './services/riskScenarioService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -184,6 +187,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const bridgeMonitorService = new BridgeMonitorService();
   const smartOrderRouterService = new SmartOrderRouterService(stateStore);
   const telemetryService = new TelemetryService(stateStore);
+  const tokenLaunchService = new TokenLaunchService();
+  const agentCommService = new AgentCommService(stateStore, config.privacy.serverSecret);
 
   // Start notification listener
   notificationService.startListening();
@@ -267,6 +272,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     bridgeMonitorService,
     smartOrderRouterService,
     telemetryService,
+    tokenLaunchService,
+    agentCommService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
