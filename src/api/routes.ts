@@ -88,6 +88,9 @@ import { PerformanceAttributionService } from '../services/performanceAttributio
 import { SwarmIntelligenceService } from '../services/swarmIntelligenceService.js';
 import { FundingRateService } from '../services/fundingRateService.js';
 import { NftTradingService } from '../services/nftTradingService.js';
+import { DataPipelineService, ingestSchema as dataIngestSchema, querySchema as dataQuerySchema, subscribeSchema as dataSubscribeSchema } from '../services/dataPipelineService.js';
+import { AgentIdentityService, CredentialType } from '../services/agentIdentityService.js';
+import { PredictionMarketService } from '../services/predictionMarketService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -176,6 +179,9 @@ interface RouteDeps {
   swarmIntelligenceService: SwarmIntelligenceService;
   fundingRateService: FundingRateService;
   nftTradingService: NftTradingService;
+  predictionMarketService: PredictionMarketService;
+  agentIdentityService: AgentIdentityService;
+  dataPipelineService: DataPipelineService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -5120,5 +5126,307 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(404).send(toErrorEnvelope(ErrorCode.NftCollectionNotFound, 'NFT collection not found.'));
     }
     return report;
+  });
+
+  // ─── Prediction Market endpoints ─────────────────────────────────────
+
+  const createPredictionMarketSchema = z.object({
+    question: z.string().min(5).max(500),
+    description: z.string().max(2000).optional().default(''),
+    creatorId: z.string().min(2),
+    resolutionCriteria: z.string().min(5).max(2000),
+    closesAt: z.string().datetime(),
+    liquidityParam: z.number().positive().optional(),
+  });
+
+  app.post('/predictions/markets', async (request, reply) => {
+    const parse = createPredictionMarketSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid prediction market payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const market = deps.predictionMarketService.createMarket(parse.data);
+      return reply.code(201).send({ market });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/predictions/markets', async (request) => {
+    const query = request.query as { status?: string };
+    const validStatuses = ['open', 'closed', 'resolved'];
+    const statusFilter = query.status && validStatuses.includes(query.status)
+      ? query.status as 'open' | 'closed' | 'resolved'
+      : undefined;
+
+    return {
+      markets: deps.predictionMarketService.listMarkets(
+        statusFilter ? { status: statusFilter } : undefined,
+      ),
+    };
+  });
+
+  const predictionBuySchema = z.object({
+    agentId: z.string().min(2),
+    outcome: z.enum(['yes', 'no']),
+    quantity: z.number().positive(),
+  });
+
+  app.post('/predictions/markets/:id/buy', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = predictionBuySchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid buy shares payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.predictionMarketService.buyShares({
+        marketId: id,
+        agentId: parse.data.agentId,
+        outcome: parse.data.outcome,
+        quantity: parse.data.quantity,
+      });
+      return reply.code(201).send({ result });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const predictionSellSchema = z.object({
+    agentId: z.string().min(2),
+    outcome: z.enum(['yes', 'no']),
+    quantity: z.number().positive(),
+  });
+
+  app.post('/predictions/markets/:id/sell', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = predictionSellSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid sell shares payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.predictionMarketService.sellShares({
+        marketId: id,
+        agentId: parse.data.agentId,
+        outcome: parse.data.outcome,
+        quantity: parse.data.quantity,
+      });
+      return { result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const predictionResolveSchema = z.object({
+    outcome: z.enum(['yes', 'no']),
+  });
+
+  app.post('/predictions/markets/:id/resolve', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parse = predictionResolveSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid resolve payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const market = deps.predictionMarketService.resolveMarket(id, parse.data.outcome);
+      return { market };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/predictions/leaderboard', async (request) => {
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 50;
+    return { leaderboard: deps.predictionMarketService.getLeaderboard(limit) };
+  });
+
+  // ─── Agent Identity & Credentials endpoints ──────────────────────
+
+  const createIdentitySchema = z.object({
+    agentId: z.string().min(2),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  });
+
+  app.post('/identity/create', async (request, reply) => {
+    const parse = createIdentitySchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid identity creation payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const identity = deps.agentIdentityService.createIdentity(parse.data);
+      return reply.code(201).send({ identity });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/identity/:agentId', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const identity = deps.agentIdentityService.getIdentity(agentId);
+    if (!identity) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.IdentityNotFound, 'Agent identity not found.'));
+    }
+    return { identity };
+  });
+
+  const issueCredentialSchema = z.object({
+    issuerDid: z.string().min(10),
+    subjectDid: z.string().min(10),
+    type: z.enum(['trade-history', 'reputation', 'compliance', 'skill-certification', 'performance']),
+    claims: z.record(z.string(), z.unknown()),
+    expiresInMs: z.number().positive().optional(),
+  });
+
+  app.post('/identity/credentials/issue', async (request, reply) => {
+    const parse = issueCredentialSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid credential issuance payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const credential = deps.agentIdentityService.issueCredential(parse.data);
+      return reply.code(201).send({ credential });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const verifyCredentialSchema = z.object({
+    credentialId: z.string().min(1),
+  });
+
+  app.post('/identity/credentials/verify', async (request, reply) => {
+    const parse = verifyCredentialSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid credential verification payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.agentIdentityService.verifyCredential(parse.data.credentialId);
+      return { verification: result };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const revokeCredentialSchema = z.object({
+    credentialId: z.string().min(1),
+    revokerDid: z.string().min(10),
+  });
+
+  app.post('/identity/credentials/revoke', async (request, reply) => {
+    const parse = revokeCredentialSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid credential revocation payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const credential = deps.agentIdentityService.revokeCredential(
+        parse.data.credentialId,
+        parse.data.revokerDid,
+      );
+      return { credential };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const attestSchema = z.object({
+    attesterDid: z.string().min(10),
+    subjectDid: z.string().min(10),
+    attestationType: z.string().min(1).max(100),
+    claim: z.string().min(1).max(2000),
+    evidence: z.record(z.string(), z.unknown()).optional(),
+    expiresInMs: z.number().positive().optional(),
+  });
+
+  app.post('/identity/attest', async (request, reply) => {
+    const parse = attestSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid attestation payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const attestation = deps.agentIdentityService.addAttestation(parse.data);
+      return reply.code(201).send({ attestation });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/identity/registry', async (request) => {
+    const query = request.query as {
+      agentIdPrefix?: string;
+      didPrefix?: string;
+      hasCredentialType?: string;
+      limit?: string;
+    };
+
+    const validTypes = ['trade-history', 'reputation', 'compliance', 'skill-certification', 'performance'];
+    const hasCredentialType = query.hasCredentialType && validTypes.includes(query.hasCredentialType)
+      ? query.hasCredentialType as CredentialType
+      : undefined;
+
+    const results = deps.agentIdentityService.searchRegistry({
+      agentIdPrefix: query.agentIdPrefix,
+      didPrefix: query.didPrefix,
+      hasCredentialType,
+      limit: query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : undefined,
+    });
+
+    return {
+      registry: results,
+      total: deps.agentIdentityService.getRegistrySize(),
+    };
   });
 }

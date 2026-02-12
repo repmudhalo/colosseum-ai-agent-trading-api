@@ -87,6 +87,8 @@ import { PerformanceAttributionService } from './services/performanceAttribution
 import { SwarmIntelligenceService } from './services/swarmIntelligenceService.js';
 import { FundingRateService } from './services/fundingRateService.js';
 import { NftTradingService } from './services/nftTradingService.js';
+import { AgentIdentityService } from './services/agentIdentityService.js';
+import { PredictionMarketService } from './services/predictionMarketService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -220,6 +222,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const swarmIntelligenceService = new SwarmIntelligenceService();
   const fundingRateService = new FundingRateService();
   const nftTradingService = new NftTradingService(stateStore);
+  const predictionMarketService = new PredictionMarketService();
+  const agentIdentityService = new AgentIdentityService();
 
   // Start notification listener
   notificationService.startListening();
@@ -321,6 +325,8 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     swarmIntelligenceService,
     fundingRateService,
     nftTradingService,
+    predictionMarketService,
+    agentIdentityService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

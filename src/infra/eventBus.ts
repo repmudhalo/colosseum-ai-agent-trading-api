@@ -59,7 +59,11 @@ export type EventType =
   | 'swarm.vote'
   | 'swarm.consensus'
   | 'swarm.aggregate'
-  | 'swarm.outcome';
+  | 'swarm.outcome'
+  | 'prediction.market.created'
+  | 'prediction.market.resolved'
+  | 'prediction.shares.bought'
+  | 'prediction.shares.sold';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 

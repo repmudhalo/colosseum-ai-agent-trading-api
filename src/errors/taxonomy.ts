@@ -35,6 +35,10 @@ export const ErrorCode = {
   CommMessageNotFound: 'comm_message_not_found',
   WorkflowNotFound: 'workflow_not_found',
   NftCollectionNotFound: 'nft_collection_not_found',
+  PredictionMarketNotFound: 'prediction_market_not_found',
+  IdentityNotFound: 'identity_not_found',
+  CredentialNotFound: 'credential_not_found',
+  DataSourceNotFound: 'data_source_not_found',
   InternalError: 'internal_error',
 } as const;
 
