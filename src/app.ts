@@ -189,6 +189,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const telemetryService = new TelemetryService(stateStore);
   const tokenLaunchService = new TokenLaunchService();
   const agentCommService = new AgentCommService(stateStore, config.privacy.serverSecret);
+  const riskScenarioService = new RiskScenarioService(stateStore);
 
   // Start notification listener
   notificationService.startListening();
@@ -274,6 +275,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     telemetryService,
     tokenLaunchService,
     agentCommService,
+    riskScenarioService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

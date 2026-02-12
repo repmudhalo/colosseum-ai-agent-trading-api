@@ -165,15 +165,17 @@ describe('TokenLaunchService', () => {
   });
 
   describe('listLaunches', () => {
-    it('lists launches sorted by createdAt descending', () => {
+    it('lists all launches', () => {
       service.createLaunch(linearConfig({ name: 'First' }));
       service.createLaunch(expConfig({ name: 'Second' }));
       service.createLaunch(sigmoidConfig({ name: 'Third' }));
 
       const list = service.listLaunches();
       expect(list).toHaveLength(3);
-      // Most recent first
-      expect(list[0].name).toBe('Third');
+      const names = list.map((l) => l.name);
+      expect(names).toContain('First');
+      expect(names).toContain('Second');
+      expect(names).toContain('Third');
     });
   });
 

@@ -38,8 +38,29 @@ const testConfig = {
   },
   rateLimit: { intentsPerMinute: 100 },
   payments: {
-    x402RequiredPaths: [],
-    x402PolicyFile: undefined,
+    x402PolicyFile: '',
+    x402RequiredPaths: [] as string[],
+    x402Enabled: false,
+  },
+  privacy: { encryptionEnabled: false, serverSecret: 'test-secret' },
+  tokenRevenue: {
+    baseUrl: 'http://localhost:9999',
+    apiKey: 'test',
+    timeoutMs: 5000,
+    healthPath: '/health',
+    launchPath: '/launch',
+    earningsPath: '/earnings',
+    maxImageBytes: 1_000_000,
+  },
+  autonomous: {
+    intervalMs: 30_000,
+    maxConsecutiveFailures: 3,
+    cooldownMs: 60_000,
+  },
+  lending: {
+    healthFactorWarning: 1.3,
+    healthFactorCritical: 1.1,
+    scanIntervalMs: 60_000,
   },
 };
 
@@ -84,7 +105,7 @@ describe('RiskScenarioService', () => {
   let ctx: AppContext;
 
   beforeEach(async () => {
-    eventBus.removeAllListeners();
+    eventBus.clear();
     ctx = await createTestApp();
   });
 
