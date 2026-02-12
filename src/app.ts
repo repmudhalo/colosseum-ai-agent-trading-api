@@ -57,6 +57,7 @@ import { SkillsMarketplaceService } from './services/skillsMarketplaceService.js
 import { ExecutionAnalyticsService } from './services/executionAnalyticsService.js';
 import { CollaborationService } from './services/collaborationService.js';
 import { StressTestService } from './services/stressTestService.js';
+import { DefiHealthScoreService } from './services/defiHealthScoreService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -160,6 +161,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const executionAnalyticsService = new ExecutionAnalyticsService(stateStore);
   const collaborationService = new CollaborationService(stateStore);
   const stressTestService = new StressTestService(stateStore);
+  const defiHealthScoreService = new DefiHealthScoreService(stateStore);
 
   // Start notification listener
   notificationService.startListening();
@@ -231,6 +233,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     executionAnalyticsService,
     collaborationService,
     stressTestService,
+    defiHealthScoreService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

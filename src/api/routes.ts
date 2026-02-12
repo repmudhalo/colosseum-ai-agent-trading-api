@@ -58,6 +58,7 @@ import { SkillsMarketplaceService, SKILL_CATEGORIES } from '../services/skillsMa
 import { ExecutionAnalyticsService } from '../services/executionAnalyticsService.js';
 import { CollaborationService } from '../services/collaborationService.js';
 import { StressTestService } from '../services/stressTestService.js';
+import { DefiHealthScoreService } from '../services/defiHealthScoreService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -116,6 +117,7 @@ interface RouteDeps {
   executionAnalyticsService: ExecutionAnalyticsService;
   collaborationService: CollaborationService;
   stressTestService: StressTestService;
+  defiHealthScoreService: DefiHealthScoreService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -2335,6 +2337,24 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get('/stress-test/scenarios', async () => ({
     scenarios: deps.stressTestService.listScenarios(),
   }));
+
+  // ─── DeFi Health Score endpoints ──────────────────────────────────────
+
+  app.get('/agents/:agentId/health-score', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const breakdown = deps.defiHealthScoreService.getHealthScoreBreakdown(agentId);
+    if (!breakdown) {
+      return reply.code(404).send(toErrorEnvelope(ErrorCode.AgentNotFound, 'Agent not found.'));
+    }
+    return breakdown;
+  });
+
+  app.get('/agents/:agentId/health-score/history', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 500) : 50;
+    return { agentId, history: deps.defiHealthScoreService.getHealthHistory(agentId, limit) };
+  });
 
   app.get('/state', async () => deps.store.snapshot());
 }
