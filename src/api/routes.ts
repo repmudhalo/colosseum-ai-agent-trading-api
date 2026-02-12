@@ -61,6 +61,8 @@ import { StressTestService } from '../services/stressTestService.js';
 import { DefiHealthScoreService } from '../services/defiHealthScoreService.js';
 import { BacktestV2Service } from '../services/backtestV2Service.js';
 import { AgentLearningService } from '../services/agentLearningService.js';
+import { GasOptimizationService } from '../services/gasOptimizationService.js';
+import { LiquidityAnalysisService } from '../services/liquidityAnalysisService.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -122,6 +124,8 @@ interface RouteDeps {
   defiHealthScoreService: DefiHealthScoreService;
   backtestV2Service: BacktestV2Service;
   agentLearningService: AgentLearningService;
+  gasOptimizationService: GasOptimizationService;
+  liquidityAnalysisService: LiquidityAnalysisService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -2566,6 +2570,55 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       sendDomainError(reply, error);
       return undefined;
     }
+  });
+
+  // ─── Gas Optimization endpoints ──────────────────────────────────────
+
+  app.get('/gas/estimate', async () =>
+    deps.gasOptimizationService.estimatePriorityFees(),
+  );
+
+  const gasOptimizeSchema = z.object({
+    agentId: z.string().min(2),
+    instructions: z.array(z.object({
+      programId: z.string().min(1),
+      computeUnits: z.number().int().positive().optional(),
+      description: z.string().max(500).optional(),
+    })).min(1),
+    priorityTier: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+    enableJitoTip: z.boolean().optional(),
+    maxFeeLamports: z.number().int().positive().optional(),
+  });
+
+  app.post('/gas/optimize', async (request, reply) => {
+    const parse = gasOptimizeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid gas optimization payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const result = deps.gasOptimizationService.optimizeTransaction(parse.data);
+      return result;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/gas/history', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 500) : 50;
+    return deps.gasOptimizationService.getGasHistory(agentId, limit);
+  });
+
+  app.get('/gas/savings/:agentId', async (request) => {
+    const { agentId } = request.params as { agentId: string };
+    return deps.gasOptimizationService.getSavingsReport(agentId);
   });
 
   app.get('/state', async () => deps.store.snapshot());
