@@ -61,6 +61,7 @@ import { StressTestService } from '../services/stressTestService.js';
 import { DefiHealthScoreService } from '../services/defiHealthScoreService.js';
 import { BacktestV2Service } from '../services/backtestV2Service.js';
 import { AgentLearningService } from '../services/agentLearningService.js';
+import { AgentPersonalityService } from '../services/agentPersonalityService.js';
 import { GasOptimizationService } from '../services/gasOptimizationService.js';
 import { LiquidityAnalysisService } from '../services/liquidityAnalysisService.js';
 import { RateLimiter } from './rateLimiter.js';
@@ -124,6 +125,7 @@ interface RouteDeps {
   defiHealthScoreService: DefiHealthScoreService;
   backtestV2Service: BacktestV2Service;
   agentLearningService: AgentLearningService;
+  agentPersonalityService: AgentPersonalityService;
   gasOptimizationService: GasOptimizationService;
   liquidityAnalysisService: LiquidityAnalysisService;
   getRuntimeMetrics: () => RuntimeMetrics;
@@ -2619,6 +2621,184 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get('/gas/savings/:agentId', async (request) => {
     const { agentId } = request.params as { agentId: string };
     return deps.gasOptimizationService.getSavingsReport(agentId);
+  });
+
+  // ─── Liquidity Analysis endpoints ──────────────────────────────────
+
+  app.get('/liquidity/:pair/depth', async (request) => {
+    const { pair } = request.params as { pair: string };
+    const query = request.query as { sizes?: string };
+    const tradeSizes = query.sizes
+      ? query.sizes.split(',').map(Number).filter((n) => n > 0)
+      : undefined;
+    return deps.liquidityAnalysisService.analyzeDepth(pair, tradeSizes);
+  });
+
+  app.get('/liquidity/:pair/heatmap', async (request) => {
+    const { pair } = request.params as { pair: string };
+    const query = request.query as { levels?: string };
+    const levels = query.levels ? Math.min(Math.max(Number(query.levels), 4), 100) : undefined;
+    return deps.liquidityAnalysisService.getHeatmap(pair, levels);
+  });
+
+  const impermanentLossSchema = z.object({
+    initialPriceRatio: z.number().positive(),
+    currentPriceRatio: z.number().positive(),
+    depositValueUsd: z.number().positive(),
+    feeAprPct: z.number().nonnegative().optional(),
+  });
+
+  app.post('/liquidity/impermanent-loss', async (request, reply) => {
+    const parse = impermanentLossSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid impermanent loss payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    return deps.liquidityAnalysisService.calculateImpermanentLoss(parse.data);
+  });
+
+  app.get('/liquidity/:pair/apr', async (request) => {
+    const { pair } = request.params as { pair: string };
+    return deps.liquidityAnalysisService.estimateApr(pair);
+  });
+
+  const routeSchema = z.object({
+    inputToken: z.string().min(1).max(20),
+    outputToken: z.string().min(1).max(20),
+    amountUsd: z.number().positive(),
+    maxSlippagePct: z.number().min(0).max(100).optional(),
+  });
+
+  app.post('/liquidity/route', async (request, reply) => {
+    const parse = routeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid route payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    return deps.liquidityAnalysisService.findBestRoute(parse.data);
+  });
+
+  app.get('/liquidity/:pair/history', async (request) => {
+    const { pair } = request.params as { pair: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 500) : 50;
+    return { history: deps.liquidityAnalysisService.getHistory(pair, limit) };
+  });
+
+  // ─── Agent Personality & Communication endpoints ─────────────────────
+
+  const personalityUpdateSchema = z.object({
+    personality: z.enum(['risk-taker', 'conservative', 'balanced', 'aggressive-scalper', 'long-term-holder']).optional(),
+    communicationStyle: z.enum(['formal', 'casual', 'technical']).optional(),
+  });
+
+  app.get('/agents/:agentId/personality', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentPersonalityService.getProfile(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.put('/agents/:agentId/personality', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = personalityUpdateSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid personality update payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const profile = deps.agentPersonalityService.setProfile(agentId, parse.data);
+      return profile;
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/personality/reasoning/:intentId', async (request, reply) => {
+    const { agentId, intentId } = request.params as { agentId: string; intentId: string };
+    try {
+      return deps.agentPersonalityService.generateTradeReasoning(agentId, intentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/personality/mood', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentPersonalityService.getMood(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/personality/strategy', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    try {
+      return deps.agentPersonalityService.getPreferredStrategy(agentId);
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  const personalityMessageSchema = z.object({
+    from: z.string().min(2),
+    message: z.string().min(1).max(2000),
+  });
+
+  app.post('/agents/:agentId/personality/messages', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const parse = personalityMessageSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send(toErrorEnvelope(
+        ErrorCode.InvalidPayload,
+        'Invalid personality message payload.',
+        parse.error.flatten(),
+      ));
+    }
+
+    try {
+      const msg = deps.agentPersonalityService.sendPersonalityMessage(
+        parse.data.from,
+        agentId,
+        parse.data.message,
+      );
+      return reply.code(201).send({ message: msg });
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
+  });
+
+  app.get('/agents/:agentId/personality/messages', async (request, reply) => {
+    const { agentId } = request.params as { agentId: string };
+    const query = request.query as { limit?: string };
+    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 50;
+    try {
+      return { messages: deps.agentPersonalityService.getMessages(agentId, limit) };
+    } catch (error) {
+      sendDomainError(reply, error);
+      return undefined;
+    }
   });
 
   app.get('/state', async () => deps.store.snapshot());

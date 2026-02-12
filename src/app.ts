@@ -62,6 +62,7 @@ import { BacktestV2Service } from './services/backtestV2Service.js';
 import { AgentLearningService } from './services/agentLearningService.js';
 import { AgentPersonalityService } from './services/agentPersonalityService.js';
 import { GasOptimizationService } from './services/gasOptimizationService.js';
+import { LiquidityAnalysisService } from './services/liquidityAnalysisService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -170,6 +171,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const agentLearningService = new AgentLearningService(stateStore);
   const agentPersonalityService = new AgentPersonalityService(stateStore);
   const gasOptimizationService = new GasOptimizationService(stateStore);
+  const liquidityAnalysisService = new LiquidityAnalysisService(stateStore);
 
   // Start notification listener
   notificationService.startListening();
@@ -246,6 +248,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     agentLearningService,
     agentPersonalityService,
     gasOptimizationService,
+    liquidityAnalysisService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

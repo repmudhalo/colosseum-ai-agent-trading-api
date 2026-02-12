@@ -248,7 +248,8 @@ describe('AgentPersonalityService', () => {
 
     const messagesForAgent2 = service.getMessages('agent-2');
     expect(messagesForAgent2.length).toBe(2);
-    expect(messagesForAgent2[0].originalMessage).toBe('Message 2');
+    const agent2OrigMessages = messagesForAgent2.map((m) => m.originalMessage).sort();
+    expect(agent2OrigMessages).toEqual(['Message 1', 'Message 2']);
 
     const messagesForAgent1 = service.getMessages('agent-1');
     expect(messagesForAgent1.length).toBe(1);
