@@ -90,6 +90,7 @@ import { NftTradingService } from './services/nftTradingService.js';
 import { DataPipelineService } from './services/dataPipelineService.js';
 import { AgentIdentityService } from './services/agentIdentityService.js';
 import { PredictionMarketService } from './services/predictionMarketService.js';
+import { MeteoraService } from './services/meteoraService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -226,6 +227,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const predictionMarketService = new PredictionMarketService();
   const agentIdentityService = new AgentIdentityService();
   const dataPipelineService = new DataPipelineService();
+  const meteoraService = new MeteoraService();
 
   // Start notification listener
   notificationService.startListening();
@@ -330,6 +332,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     predictionMarketService,
     agentIdentityService,
     dataPipelineService,
+    meteoraService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

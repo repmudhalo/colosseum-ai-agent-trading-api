@@ -91,6 +91,8 @@ import { NftTradingService } from '../services/nftTradingService.js';
 import { DataPipelineService, ingestSchema as dataIngestSchema, querySchema as dataQuerySchema, subscribeSchema as dataSubscribeSchema } from '../services/dataPipelineService.js';
 import { AgentIdentityService, CredentialType } from '../services/agentIdentityService.js';
 import { PredictionMarketService } from '../services/predictionMarketService.js';
+import { MeteoraService } from '../services/meteoraService.js';
+import { registerMeteoraRoutes } from './meteoraRoutes.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
@@ -182,6 +184,7 @@ interface RouteDeps {
   predictionMarketService: PredictionMarketService;
   agentIdentityService: AgentIdentityService;
   dataPipelineService: DataPipelineService;
+  meteoraService: MeteoraService;
   getRuntimeMetrics: () => RuntimeMetrics;
 }
 
@@ -5506,4 +5509,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     metrics: deps.dataPipelineService.computeAllMetrics(),
     definitions: deps.dataPipelineService.listMetricDefinitions(),
   }));
+
+  // ─── Meteora DLMM endpoints ──────────────────────────────────────
+
+  registerMeteoraRoutes(app, deps.meteoraService);
 }
