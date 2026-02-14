@@ -84,6 +84,34 @@ POST /snipe
 { "mintAddress": "...", "side": "sell", "amountSol": 0.05, "slippageBps": 500 }
 ```
 
+### Import a Manually Opened Position
+
+If you (or the user) bought a token **outside** Sesame (e.g. in a DEX UI or another app), Sesame can **adopt** that position and take over management (TP, SL, trailing, moon bag, re-entry).
+
+**Automatic:** Sesame **scans the wallet every 2 minutes** for any token balance that is not already tracked. New manual positions are adopted automatically (tag: `auto-import`). You can still call **POST /snipe/import** anytime to adopt a position immediately or to pass `entryPriceUsd` / `totalSolSpent` for better P&L.
+
+```
+POST /snipe/import
+Content-Type: application/json
+
+{
+  "mintAddress": "THE_TOKEN_MINT_ADDRESS",
+  "entryPriceUsd": 0.000025,   // optional; if omitted, current price is used
+  "totalSolSpent": 0.05,       // optional; for P&L accuracy
+  "tag": "manual-buy-raydium", // optional
+  "strategy": { "takeProfitPct": 40, "stopLossPct": 10 }  // optional override
+}
+```
+
+- **Required:** `mintAddress`. The wallet must already hold the token (Sesame reads the balance on-chain).
+- **entryPriceUsd:** Your actual entry price. If omitted, Sesame uses the current market price (so P&L will be from "now").
+- **totalSolSpent:** Optional; improves P&L and cost-base display.
+- **strategy:** Same shape as in `POST /snipe`; defaults apply if omitted.
+
+Response: `{ "success": true, "position": { ... }, "error": null }` or `{ "success": false, "position": null, "error": "No token balance for this mint in the wallet. Buy the token first, then import." }`.
+
+After a successful import, the position appears in `GET /snipe/portfolio` and is managed like any other (TP, SL, trailing, moon bag, re-entry).
+
 ### Analyze (No Trade)
 
 ```
@@ -146,6 +174,7 @@ PUT /snipe/positions/{mintAddress}/strategy
 ### Other Endpoints
 
 ```
+POST /snipe/import            — Adopt a manually opened position (wallet already holds the token)
 GET /snipe/positions          — All open positions
 GET /snipe/positions/{mint}   — Single position
 GET /snipe/trades             — Trade history (includes auto-exits + re-entries)
@@ -223,6 +252,7 @@ After taking profit (if `reEntryEnabled`):
 7. **Always tag trades.** Helps track strategy performance.
 8. **Set moonBagPct to 0** if you want clean full exits on TP.
 9. **Set reEntryEnabled to false** if you don't want auto dip-buys.
+10. **If the user opened a trade manually** (e.g. in Raydium/Pump), Sesame will pick it up automatically within about 2 minutes. They can also call **POST /snipe/import** with the mint (and optional `entryPriceUsd`) to adopt it immediately.
 
 ## Example Full Cycle
 

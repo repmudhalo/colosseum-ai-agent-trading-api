@@ -142,6 +142,13 @@ interface WatchedToken {
   watchedSince: string;
 }
 
+/** Result of importing an existing wallet position for Sesame to manage. */
+export interface ImportPositionResult {
+  success: boolean;
+  position: SnipePosition | null;
+  error: string | null;
+}
+
 export interface SnipePortfolio {
   openPositions: SnipePosition[];
   closedPositions: SnipePosition[];
@@ -178,6 +185,11 @@ const DEFAULT_RE_ENTRY_DIP_PCT = 25;    // Buy back at -25% from sell.
 const DEFAULT_RE_ENTRY_AMOUNT_SOL = 0.01;
 const DEFAULT_MAX_RE_ENTRIES = 2;
 
+/** How often to scan the wallet for manually opened positions (default 2 min). */
+const DEFAULT_AUTO_IMPORT_INTERVAL_MS = 120_000;
+/** Mints to never auto-import (e.g. wrapped SOL, USDC). */
+const DEFAULT_AUTO_IMPORT_BLOCKLIST = 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class SnipeService {
@@ -186,7 +198,10 @@ export class SnipeService {
   private prices: Map<string, TokenPrice> = new Map();
   private trades: SnipeTrade[] = [];
   private priceMonitorHandle: ReturnType<typeof setInterval> | null = null;
+  private autoImportHandle: ReturnType<typeof setInterval> | null = null;
   private readonly priceIntervalMs: number;
+  private readonly autoImportIntervalMs: number;
+  private readonly autoImportBlocklist: Set<string>;
   private defaultStrategy: ExitStrategy;
   private autoExitLocks: Set<string> = new Set();
 
@@ -213,6 +228,14 @@ export class SnipeService {
       MIN_PRICE_POLL_MS,
       Number.isFinite(envInterval) ? envInterval : DEFAULT_PRICE_POLL_MS,
     );
+
+    const importInterval = Number(process.env.SNIPE_AUTO_IMPORT_INTERVAL_MS);
+    this.autoImportIntervalMs = Number.isFinite(importInterval) && importInterval > 0
+      ? importInterval
+      : DEFAULT_AUTO_IMPORT_INTERVAL_MS;
+
+    const blocklistRaw = process.env.SNIPE_AUTO_IMPORT_BLOCKLIST_MINTS ?? DEFAULT_AUTO_IMPORT_BLOCKLIST;
+    this.autoImportBlocklist = new Set(blocklistRaw.split(',').map((s) => s.trim()).filter(Boolean));
 
     // Load default strategy from environment.
     this.defaultStrategy = {
@@ -268,6 +291,11 @@ export class SnipeService {
     } catch {
       // No persisted state — fresh start.
     }
+
+    // Start background scan for manually opened positions (every 2 min by default).
+    if (this.isReady()) {
+      this.startAutoImportInterval();
+    }
   }
 
   // ─── Public: Status ──────────────────────────────────────────────────
@@ -292,6 +320,80 @@ export class SnipeService {
     return { ...this.defaultStrategy };
   }
 
+  // ─── Public: Import existing position (manual wallet trade) ───────────
+
+  /**
+   * Adopt a position you opened manually (e.g. in a DEX UI).
+   * Sesame will read the wallet's token balance for this mint and start
+   * managing it: TP, SL, trailing stop, moon bag, re-entry.
+   */
+  async importPosition(
+    mintAddress: string,
+    options?: { entryPriceUsd?: number; totalSolSpent?: number; tag?: string; strategy?: Partial<ExitStrategy> },
+  ): Promise<ImportPositionResult> {
+    const existing = this.positions.get(mintAddress);
+    if (existing && existing.status === 'open') {
+      return { success: true, position: this.enrichPosition(existing), error: null };
+    }
+
+    const balance = await this.jupiterClient.getTokenBalance(mintAddress);
+    if (!balance || balance.amount === '0') {
+      return {
+        success: false,
+        position: null,
+        error: 'No token balance for this mint in the wallet. Buy the token first, then import.',
+      };
+    }
+
+    const prices = await this.fetchTokenPrices([mintAddress]);
+    const currentPrice = prices[mintAddress]?.priceUsd ?? null;
+    const entryPriceUsd = options?.entryPriceUsd ?? currentPrice;
+    const strategy = this.buildStrategy(options?.strategy);
+
+    const now = new Date().toISOString();
+    const position: SnipePosition = {
+      mintAddress,
+      tokensHeld: balance.amount,
+      tokenDecimals: balance.decimals,
+      totalSolSpent: options?.totalSolSpent ?? 0,
+      totalSolReceived: 0,
+      realizedPnlSol: 0,
+      entryPriceUsd: entryPriceUsd ?? null,
+      peakPriceUsd: entryPriceUsd ?? currentPrice ?? null,
+      currentPriceUsd: currentPrice,
+      currentValueUsd: null,
+      changePct: null,
+      changeFromPeakPct: null,
+      priceChange24hPct: prices[mintAddress]?.priceChange24hPct ?? null,
+      exitStrategy: { ...strategy },
+      autoExitReason: null,
+      isMoonBag: false,
+      reEntryCount: 0,
+      buyCount: 0,
+      sellCount: 0,
+      firstTradeAt: now,
+      lastTradeAt: now,
+      priceUpdatedAt: currentPrice ? now : null,
+      status: 'open',
+    };
+
+    this.positions.set(mintAddress, position);
+    if (currentPrice) this.prices.set(mintAddress, { priceUsd: currentPrice, priceChange24hPct: prices[mintAddress]?.priceChange24hPct ?? null, updatedAt: now });
+
+    if (this.getOpenMintAddresses().length > 0) this.startPriceMonitor();
+    this.schedulePersist();
+
+    eventBus.emit('snipe.trade', {
+      mintAddress,
+      side: 'buy',
+      entryPriceUsd: position.entryPriceUsd,
+      currentPriceUsd: position.currentPriceUsd,
+      tag: options?.tag ?? 'imported',
+    });
+
+    return { success: true, position: this.enrichPosition(position), error: null };
+  }
+
   // ─── Public: Price Monitor ───────────────────────────────────────────
 
   startPriceMonitor(): void {
@@ -305,6 +407,39 @@ export class SnipeService {
   }
 
   isPriceMonitorActive(): boolean { return this.priceMonitorHandle !== null; }
+
+  // ─── Auto-import: discover manual positions every N minutes ─────────────
+
+  /** Scan wallet for token balances and adopt any that are not already tracked. */
+  private async runAutoImport(): Promise<void> {
+    if (!this.isReady()) return;
+    try {
+      const balances = await this.jupiterClient.getAllTokenBalances();
+      for (const { mintAddress } of balances) {
+        if (this.autoImportBlocklist.has(mintAddress)) continue;
+        const existing = this.positions.get(mintAddress);
+        if (existing && existing.status === 'open') continue;
+        await this.importPosition(mintAddress, { tag: 'auto-import' });
+      }
+    } catch {
+      // Non-fatal; next run will retry.
+    }
+  }
+
+  /** Start the background job that checks for manual positions every 2 min. */
+  startAutoImportInterval(): void {
+    if (this.autoImportHandle) return;
+    this.runAutoImport(); // Run once soon
+    this.autoImportHandle = setInterval(() => { this.runAutoImport(); }, this.autoImportIntervalMs);
+  }
+
+  /** Stop the auto-import background job. */
+  stopAutoImportInterval(): void {
+    if (this.autoImportHandle) {
+      clearInterval(this.autoImportHandle);
+      this.autoImportHandle = null;
+    }
+  }
 
   // ─── Public: Portfolio & Positions ───────────────────────────────────
 

@@ -5581,6 +5581,47 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   /**
+   * POST /snipe/import — Adopt a position you opened manually (e.g. in a DEX UI).
+   *
+   * Sesame reads the wallet's token balance for this mint and starts managing it:
+   * TP, SL, trailing stop, moon bag, re-entry. Use when you bought a token outside Sesame.
+   *
+   * Body: { mintAddress, entryPriceUsd?, totalSolSpent?, tag?, strategy? }
+   */
+  const importPositionSchema = z.object({
+    mintAddress: z.string().min(32).max(44),
+    entryPriceUsd: z.number().positive().optional(),
+    totalSolSpent: z.number().min(0).optional(),
+    tag: z.string().max(100).optional(),
+    strategy: snipeStrategySchema.optional(),
+  });
+
+  app.post('/snipe/import', async (request, reply) => {
+    const parse = importPositionSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+    }
+
+    if (!deps.snipeService.isReady()) {
+      return reply.code(503).send({
+        error: 'Snipe service not ready. Check SOLANA_RPC_URL and SOLANA_PRIVATE_KEY_B58.',
+      });
+    }
+
+    const { mintAddress, entryPriceUsd, totalSolSpent, tag, strategy } = parse.data;
+    const result = await deps.snipeService.importPosition(mintAddress, {
+      entryPriceUsd,
+      totalSolSpent,
+      tag,
+      strategy,
+    });
+    if (!result.success) {
+      return reply.code(400).send(result);
+    }
+    return reply.send(result);
+  });
+
+  /**
    * POST /snipe/analyze — Analyze a token without trading.
    *
    * Returns liquidity info, Jupiter quote, and warnings.
