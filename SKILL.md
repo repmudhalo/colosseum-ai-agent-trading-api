@@ -127,11 +127,15 @@ If `hasLiquidity` is `false`, do NOT buy.
 GET /snipe/portfolio
 ```
 
-**Response includes:**
+**Sesame checks your wallet** when you request the portfolio: it reconciles open positions with actual token balances. If you closed a position manually (e.g. sold in a DEX), it will be marked closed and removed from open positions so the agent sees the true state.
+
+**Response includes:** Each position and watched token has `symbol` (ticker, e.g. `BONK`) and `name` so the agent can show token names instead of raw addresses.
 ```json
 {
   "openPositions": [{
     "mintAddress": "...",
+    "symbol": "BONK",
+    "name": "Bonk",
     "entryPriceUsd": 0.000024,
     "peakPriceUsd": 0.000030,
     "currentPriceUsd": 0.000028,
@@ -144,6 +148,8 @@ GET /snipe/portfolio
   }],
   "watchedForReEntry": [{
     "mintAddress": "...",
+    "symbol": "PW",
+    "name": "Psych Ward",
     "sellPriceUsd": 0.000032,
     "reEntryBelow": 0.000024,
     "remainingReEntries": 2
@@ -247,12 +253,13 @@ After taking profit (if `reEntryEnabled`):
 2. **Use small amounts.** 0.01-0.05 SOL per trade.
 3. **Trust the auto-manager.** It handles TP, SL, moon bags, and re-entries.
 4. **Poll trade status on a heartbeat.** Call `GET /snipe/portfolio` every 60–120 seconds to stay in sync with open positions and re-entry watches.
-5. **Override when needed.** Use the strategy endpoints to adjust per-position.
-6. **Check trade history.** `GET /snipe/trades` shows auto-exits, moon bags, and re-entries.
-7. **Always tag trades.** Helps track strategy performance.
-8. **Set moonBagPct to 0** if you want clean full exits on TP.
-9. **Set reEntryEnabled to false** if you don't want auto dip-buys.
-10. **If the user opened a trade manually** (e.g. in Raydium/Pump), Sesame will pick it up automatically within about 2 minutes. They can also call **POST /snipe/import** with the mint (and optional `entryPriceUsd`) to adopt it immediately.
+5. **Use `symbol` (and `name`) when talking to the user.** Positions, trades, and watched tokens include `symbol` (e.g. `BONK`) and `name` from DexScreener — prefer "BONK" or "Bonk" over the raw mint address so the user can tell which token is which.
+6. **Override when needed.** Use the strategy endpoints to adjust per-position.
+7. **Check trade history.** `GET /snipe/trades` shows auto-exits, moon bags, and re-entries (each trade includes `symbol` and `name`).
+8. **Always tag trades.** Helps track strategy performance.
+9. **Set moonBagPct to 0** if you want clean full exits on TP.
+10. **Set reEntryEnabled to false** if you don't want auto dip-buys.
+11. **If the user opened a trade manually** (e.g. in Raydium/Pump), Sesame will pick it up automatically within about 2 minutes. They can also call **POST /snipe/import** with the mint (and optional `entryPriceUsd`) to adopt it immediately.
 
 ## Example Full Cycle
 

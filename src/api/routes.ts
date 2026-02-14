@@ -5667,14 +5667,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
    * The OpenClaw bot should call this to understand its current state.
    */
   app.get('/snipe/portfolio', async () => {
-    return deps.snipeService.getPortfolio();
+    return await deps.snipeService.getPortfolio();
   });
 
   /**
    * GET /snipe/positions — All open positions (tokens currently held).
+   * Reconciles with wallet first so manually closed positions are excluded.
    */
   app.get('/snipe/positions', async () => {
-    const portfolio = deps.snipeService.getPortfolio();
+    const portfolio = await deps.snipeService.getPortfolio();
     return { positions: portfolio.openPositions };
   });
 

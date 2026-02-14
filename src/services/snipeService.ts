@@ -108,11 +108,19 @@ export interface SnipePosition {
   lastTradeAt: string;
   priceUpdatedAt: string | null;
   status: 'open' | 'closed';
+  /** Token ticker (e.g. BONK). Filled from DexScreener when available. */
+  symbol?: string | null;
+  /** Token name. Filled from DexScreener when available. */
+  name?: string | null;
 }
 
 export interface SnipeTrade {
   id: string;
   mintAddress: string;
+  /** Token ticker (e.g. BONK). Filled when returning so the agent can show names. */
+  symbol?: string | null;
+  /** Token name. Filled when returning. */
+  name?: string | null;
   side: 'buy' | 'sell';
   amountSol: number;
   tokenAmount: string;
@@ -153,7 +161,7 @@ export interface SnipePortfolio {
   openPositions: SnipePosition[];
   closedPositions: SnipePosition[];
   /** Tokens being watched for dip re-entry. */
-  watchedForReEntry: { mintAddress: string; sellPriceUsd: number; reEntryBelow: number; remainingReEntries: number }[];
+  watchedForReEntry: { mintAddress: string; symbol?: string | null; name?: string | null; sellPriceUsd: number; reEntryBelow: number; remainingReEntries: number }[];
   totalSolSpent: number;
   totalSolReceived: number;
   totalRealizedPnlSol: number;
@@ -196,6 +204,8 @@ export class SnipeService {
   private readonly jupiterClient: JupiterClient;
   private positions: Map<string, SnipePosition> = new Map();
   private prices: Map<string, TokenPrice> = new Map();
+  /** Token symbol/name from DexScreener (mint -> { symbol, name }) for agent display. */
+  private tokenMetadata: Map<string, { symbol: string; name: string }> = new Map();
   private trades: SnipeTrade[] = [];
   private priceMonitorHandle: ReturnType<typeof setInterval> | null = null;
   private autoImportHandle: ReturnType<typeof setInterval> | null = null;
@@ -443,7 +453,37 @@ export class SnipeService {
 
   // ─── Public: Portfolio & Positions ───────────────────────────────────
 
-  getPortfolio(): SnipePortfolio {
+  /**
+   * Reconcile open positions with the actual wallet.
+   * If the user sold a token manually, we mark that position as closed.
+   * Called before getPortfolio() and in the price poll so state matches reality.
+   */
+  private async reconcilePositionsWithWallet(): Promise<void> {
+    if (!this.isReady()) return;
+    try {
+      const balances = await this.jupiterClient.getAllTokenBalances();
+      const balanceByMint = new Map(balances.map((b) => [b.mintAddress, b.amount]));
+
+      for (const position of this.positions.values()) {
+        if (position.status !== 'open') continue;
+        const held = balanceByMint.get(position.mintAddress);
+        if (held === undefined || held === '0') {
+          position.status = 'closed';
+          position.tokensHeld = '0';
+          position.autoExitReason = 'closed_externally';
+          position.lastTradeAt = new Date().toISOString();
+          this.schedulePersist();
+        }
+      }
+    } catch {
+      // Non-fatal; next reconcile will retry.
+    }
+  }
+
+  /** Get portfolio; first reconciles with wallet so manually closed positions are marked closed. */
+  async getPortfolio(): Promise<SnipePortfolio> {
+    await this.reconcilePositionsWithWallet();
+
     const all = Array.from(this.positions.values()).map((p) => this.enrichPosition(p));
     const open = all.filter((p) => p.status === 'open');
     const closed = all.filter((p) => p.status === 'closed');
@@ -454,13 +494,18 @@ export class SnipeService {
       totalOpenValueUsd += p.currentValueUsd;
     }
 
-    // Build watched-for-reentry summary.
-    const watchedForReEntry = Array.from(this.watchedTokens.values()).map((w) => ({
-      mintAddress: w.mintAddress,
-      sellPriceUsd: w.sellPriceUsd,
-      reEntryBelow: Number((w.sellPriceUsd * (1 - w.reEntryDipPct / 100)).toFixed(10)),
-      remainingReEntries: w.remainingReEntries,
-    }));
+    // Build watched-for-reentry summary (include symbol/name for agent display).
+    const watchedForReEntry = Array.from(this.watchedTokens.values()).map((w) => {
+      const meta = this.tokenMetadata.get(w.mintAddress);
+      return {
+        mintAddress: w.mintAddress,
+        symbol: meta?.symbol ?? null,
+        name: meta?.name ?? null,
+        sellPriceUsd: w.sellPriceUsd,
+        reEntryBelow: Number((w.sellPriceUsd * (1 - w.reEntryDipPct / 100)).toFixed(10)),
+        remainingReEntries: w.remainingReEntries,
+      };
+    });
 
     return {
       openPositions: open,
@@ -486,7 +531,10 @@ export class SnipeService {
   getTrades(mintAddress?: string, limit = 50): SnipeTrade[] {
     let result = this.trades;
     if (mintAddress) result = result.filter((t) => t.mintAddress === mintAddress);
-    return result.slice(0, limit);
+    return result.slice(0, limit).map((t) => {
+      const meta = this.tokenMetadata.get(t.mintAddress);
+      return { ...t, symbol: meta?.symbol ?? null, name: meta?.name ?? null };
+    });
   }
 
   // ─── Public: Analyze ─────────────────────────────────────────────────
@@ -601,6 +649,9 @@ export class SnipeService {
   // ─── Private: Price Polling + Auto Exit + Re-Entry ───────────────────
 
   private async pollPrices(): Promise<void> {
+    // Reconcile with wallet first: mark as closed any position the user sold manually.
+    await this.reconcilePositionsWithWallet();
+
     // Collect all mints we need prices for: open positions + watched re-entries.
     const openMints = this.getOpenMintAddresses();
     const watchedMints = Array.from(this.watchedTokens.keys());
@@ -928,7 +979,7 @@ export class SnipeService {
       if (!response.ok) continue;
 
       const pairs = (await response.json()) as Array<{
-        baseToken?: { address?: string };
+        baseToken?: { address?: string; symbol?: string; name?: string };
         priceUsd?: string;
         priceChange?: { h24?: number };
       }>;
@@ -940,6 +991,9 @@ export class SnipeService {
         const price = Number(pair.priceUsd);
         if (mint && Number.isFinite(price) && price > 0 && !result[mint]) {
           result[mint] = { priceUsd: price, priceChange24hPct: pair.priceChange?.h24 ?? null };
+          const symbol = (pair.baseToken?.symbol ?? '—').trim() || '—';
+          const name = (pair.baseToken?.name ?? '—').trim() || '—';
+          this.tokenMetadata.set(mint, { symbol, name });
         }
       }
     }
@@ -1002,6 +1056,9 @@ export class SnipeService {
   private enrichPosition(position: SnipePosition): SnipePosition {
     const enriched = { ...position, exitStrategy: { ...position.exitStrategy } };
     const price = this.prices.get(position.mintAddress);
+    const meta = this.tokenMetadata.get(position.mintAddress);
+    enriched.symbol = meta?.symbol ?? null;
+    enriched.name = meta?.name ?? null;
 
     if (price) {
       enriched.currentPriceUsd = price.priceUsd;
