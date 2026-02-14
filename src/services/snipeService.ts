@@ -593,13 +593,29 @@ export class SnipeService {
       const tokenAmount = side === 'buy' ? (analysis.estimatedOutput ?? '0') : (analysis.inputAmount ?? '0');
       const decimals = this.extractDecimals(analysis.quote, mintAddress);
 
-      // Calculate entry price from the Jupiter quote.
+      // Entry price: from Jupiter quote if available, else from DexScreener right after buy.
       let entryPriceUsd: number | null = null;
       if (side === 'buy') {
         const swapUsdValue = Number((analysis.quote as Record<string, unknown>)['swapUsdValue']);
         const tokenCount = Number(BigInt(tokenAmount)) / (10 ** decimals);
         if (Number.isFinite(swapUsdValue) && swapUsdValue > 0 && tokenCount > 0) {
           entryPriceUsd = swapUsdValue / tokenCount;
+        }
+        if (entryPriceUsd === null) {
+          const prices = await this.fetchTokenPrices([mintAddress]);
+          const data = prices[mintAddress];
+          if (data?.priceUsd) {
+            entryPriceUsd = data.priceUsd;
+            const now = new Date().toISOString();
+            this.prices.set(mintAddress, { priceUsd: data.priceUsd, priceChange24hPct: data.priceChange24hPct, updatedAt: now });
+          }
+          if (entryPriceUsd === null && tokenCount > 0) {
+            const solPrices = await this.fetchTokenPrices([SOL_MINT]);
+            const solUsd = solPrices[SOL_MINT]?.priceUsd;
+            if (Number.isFinite(solUsd) && solUsd > 0) {
+              entryPriceUsd = (amountSol * solUsd) / tokenCount;
+            }
+          }
         }
       }
 
