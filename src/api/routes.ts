@@ -96,6 +96,7 @@ import { registerMeteoraRoutes } from './meteoraRoutes.js';
 import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
+import { SnipeService } from '../services/snipeService.js';
 
 interface RouteDeps {
   config: AppConfig;
@@ -186,6 +187,7 @@ interface RouteDeps {
   dataPipelineService: DataPipelineService;
   meteoraService: MeteoraService;
   getRuntimeMetrics: () => RuntimeMetrics;
+  snipeService: SnipeService;
 }
 
 const registerAgentSchema = z.object({
@@ -5513,4 +5515,185 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // ─── Meteora DLMM endpoints ──────────────────────────────────────
 
   registerMeteoraRoutes(app, deps.meteoraService);
+
+  // ─── Snipe endpoints (direct trading by mint address) ─────────────
+  // Designed for external bot integration (e.g., copenclaw).
+  // Send a contract address → analyze → swap in one call.
+
+  const snipeStrategySchema = z.object({
+    takeProfitPct: z.number().positive().max(10000).optional(),
+    stopLossPct: z.number().positive().max(100).optional(),
+    trailingStopPct: z.number().positive().max(100).nullable().optional(),
+    moonBagPct: z.number().min(0).max(90).optional(),
+    reEntryEnabled: z.boolean().optional(),
+    reEntryDipPct: z.number().positive().max(100).optional(),
+    reEntryAmountSol: z.number().positive().max(10).optional(),
+    maxReEntries: z.number().int().min(0).max(100).optional(),
+  }).optional();
+
+  const snipeSchema = z.object({
+    mintAddress: z.string().min(32).max(44),
+    side: z.enum(['buy', 'sell']).default('buy'),
+    amountSol: z.number().positive(),
+    slippageBps: z.number().int().min(10).max(1500).optional(),
+    tag: z.string().max(100).optional(),
+    strategy: snipeStrategySchema,
+  });
+
+  /**
+   * POST /snipe — Buy or sell any token by mint address.
+   *
+   * The OpenClaw bot calls this with a contract address and amount.
+   * The service will: get a Jupiter quote → analyze → swap → track position.
+   *
+   * Body: { mintAddress, side?, amountSol, slippageBps?, tag? }
+   */
+  app.post('/snipe', async (request, reply) => {
+    const parse = snipeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+    }
+
+    if (!deps.snipeService.isReady()) {
+      return reply.code(503).send({
+        error: 'Snipe service not ready. Check SOLANA_RPC_URL and SOLANA_PRIVATE_KEY_B58.',
+      });
+    }
+
+    const result = await deps.snipeService.snipe(parse.data);
+    return reply.code(result.success ? 200 : 400).send(result);
+  });
+
+  /**
+   * POST /snipe/analyze — Analyze a token without trading.
+   *
+   * Returns liquidity info, Jupiter quote, and warnings.
+   * Use this to check a token before committing to a trade.
+   *
+   * Body: { mintAddress, amountSol?, side? }
+   */
+  const analyzeSchema = z.object({
+    mintAddress: z.string().min(32).max(44),
+    amountSol: z.number().positive().default(0.01),
+    side: z.enum(['buy', 'sell']).default('buy'),
+    slippageBps: z.number().int().min(10).max(1500).optional(),
+  });
+
+  app.post('/snipe/analyze', async (request, reply) => {
+    const parse = analyzeSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+    }
+
+    const analysis = await deps.snipeService.analyzeToken(
+      parse.data.mintAddress,
+      parse.data.amountSol,
+      parse.data.side,
+      parse.data.slippageBps,
+    );
+    return reply.send(analysis);
+  });
+
+  /**
+   * GET /snipe/wallet — Get the trading wallet address and readiness status.
+   */
+  app.get('/snipe/wallet', async () => ({
+    ready: deps.snipeService.isReady(),
+    walletAddress: deps.snipeService.walletAddress() ?? null,
+    broadcastEnabled: deps.config.trading.liveBroadcastEnabled,
+  }));
+
+  /**
+   * GET /snipe/portfolio — Full portfolio summary.
+   *
+   * Returns all open/closed positions, total P&L, and trade count.
+   * The OpenClaw bot should call this to understand its current state.
+   */
+  app.get('/snipe/portfolio', async () => {
+    return deps.snipeService.getPortfolio();
+  });
+
+  /**
+   * GET /snipe/positions — All open positions (tokens currently held).
+   */
+  app.get('/snipe/positions', async () => {
+    const portfolio = deps.snipeService.getPortfolio();
+    return { positions: portfolio.openPositions };
+  });
+
+  /**
+   * GET /snipe/positions/:mintAddress — Get a single position by mint address.
+   */
+  app.get('/snipe/positions/:mintAddress', async (request, reply) => {
+    const { mintAddress } = request.params as { mintAddress: string };
+    const position = deps.snipeService.getPosition(mintAddress);
+    if (!position) {
+      return reply.code(404).send({ error: 'No position found for this mint address.' });
+    }
+    return position;
+  });
+
+  /**
+   * GET /snipe/trades — Trade history. Optional ?mint=xxx&limit=50 filters.
+   */
+  app.get('/snipe/trades', async (request) => {
+    const query = request.query as { mint?: string; limit?: string };
+    const limit = Math.min(Number(query.limit) || 50, 200);
+    return { trades: deps.snipeService.getTrades(query.mint, limit) };
+  });
+
+  // ─── Strategy management ────────────────────────────────────────────
+
+  /**
+   * GET /snipe/strategy — Get the current default exit strategy.
+   */
+  app.get('/snipe/strategy', async () => {
+    return { defaultStrategy: deps.snipeService.getDefaultStrategy() };
+  });
+
+  const strategyOverrideSchema = z.object({
+    takeProfitPct: z.number().positive().max(10000).optional(),
+    stopLossPct: z.number().positive().max(100).optional(),
+    trailingStopPct: z.number().positive().max(100).nullable().optional(),
+    moonBagPct: z.number().min(0).max(90).optional(),
+    reEntryEnabled: z.boolean().optional(),
+    reEntryDipPct: z.number().positive().max(100).optional(),
+    reEntryAmountSol: z.number().positive().max(10).optional(),
+    maxReEntries: z.number().int().min(0).max(100).optional(),
+  });
+
+  /**
+   * PUT /snipe/strategy — Update the default exit strategy for all future trades.
+   *
+   * Body: { takeProfitPct?, stopLossPct?, trailingStopPct? }
+   */
+  app.put('/snipe/strategy', async (request, reply) => {
+    const parse = strategyOverrideSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid strategy', details: parse.error.issues });
+    }
+    const updated = deps.snipeService.updateDefaultStrategy(parse.data);
+    return { defaultStrategy: updated };
+  });
+
+  /**
+   * PUT /snipe/positions/:mintAddress/strategy — Override strategy for a single position.
+   *
+   * The bot calls this to change TP/SL/trailing for one active trade.
+   *
+   * Body: { takeProfitPct?, stopLossPct?, trailingStopPct? }
+   */
+  app.put('/snipe/positions/:mintAddress/strategy', async (request, reply) => {
+    const { mintAddress } = request.params as { mintAddress: string };
+    const parse = strategyOverrideSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid strategy', details: parse.error.issues });
+    }
+
+    const position = deps.snipeService.updatePositionStrategy(mintAddress, parse.data);
+    if (!position) {
+      return reply.code(404).send({ error: 'No open position found for this mint address.' });
+    }
+    return position;
+  });
 }

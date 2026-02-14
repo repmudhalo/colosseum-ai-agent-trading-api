@@ -1,148 +1,117 @@
-# Autonomous DeFi Agent Infrastructure
+# Sesame
 
-> Self-improving autonomous DeFi operating system for AI agents on Solana.
+> Autonomous Solana meme coin trading arm with self-learning.
 
-[![Tests](https://img.shields.io/badge/tests-1264-brightgreen)]()
-[![Features](https://img.shields.io/badge/features-90%2B-blue)]()
-[![Lines](https://img.shields.io/badge/lines-67K%2B-orange)]()
-[![Endpoints](https://img.shields.io/badge/endpoints-352-purple)]()
-[![Live](https://img.shields.io/badge/status-live%20on%20mainnet-success)]()
+Sesame is the trading execution layer that plugs into your agent (e.g., OpenClaw). Send it a token contract address, and it handles everything: buy via Jupiter DEX, auto take-profit, stop-loss, trailing stop, moon bags, dip re-entries, and learning from every trade to get smarter over time.
 
-**Live API:** https://colosseum-ai-agent-trading-api.onrender.com  
-**Built for:** [Colosseum Agent Hackathon](https://colosseum.com)
+## How It Works
 
-## What Is This?
-
-A complete DeFi operating system that any AI agent can plug into. Register your agent, get access to 352 API endpoints spanning trading, risk management, analytics, social features, and more.
-
-**The killer feature:** a self-improving flywheel where trading profits fund AI inference that evolves strategies via genetic algorithm. The agent literally gets smarter as it trades.
+```
+Your Bot (OpenClaw)          Sesame (this API)
+     │                            │
+     │  POST /snipe               │
+     │  { mint, 0.05 SOL }  ───► │  Buy via Jupiter DEX
+     │                            │  Track position
+     │                            │  Monitor price every 10s
+     │                            │  ┌─ Take Profit (+30%)  → sell 80%, keep 20% moon bag
+     │                            │  ├─ Stop Loss (-15%)     → full sell
+     │                            │  ├─ Trailing Stop (-20%) → full sell
+     │                            │  └─ Dip Re-Entry (-25%)  → auto buy back in
+     │                            │
+     │  GET /snipe/portfolio      │  ← Live prices, P&L, strategy status
+     │                            │
+     │                            │  Learning service analyzes every trade
+     │                            │  Adapts strategy based on performance
+```
 
 ## Quick Start
 
 ```bash
-# Check health
-curl https://colosseum-ai-agent-trading-api.onrender.com/health
-
-# Register your agent
-curl -X POST https://colosseum-ai-agent-trading-api.onrender.com/agents/register \
-  -H "content-type: application/json" \
-  -d '{"name": "my-agent", "ownerPubkey": "your-solana-wallet", "strategy": "momentum-v1"}'
-
-# Submit a trade intent
-curl -X POST https://colosseum-ai-agent-trading-api.onrender.com/trade-intents \
-  -H "content-type: application/json" \
-  -H "x-agent-api-key: your-key" \
-  -d '{"symbol": "SOL", "side": "buy", "notionalUsd": 10}'
-```
-
-## Features (90+)
-
-### 🔄 Trading
-- 5 built-in strategies (Momentum, Mean Reversion, Arbitrage, DCA, TWAP)
-- Smart Order Router (TWAP, VWAP, Iceberg)
-- Market Making Engine
-- Funding Rate Arbitrage (Drift/Mango)
-- Limit orders, stop-loss, advanced orders
-- Jupiter DEX integration (live mainnet swaps)
-
-### 🛡️ Risk Management
-- 6-layer risk engine (drawdown, position, cooldown, volatility, correlation, exposure)
-- Position Sizing (Kelly Criterion, fractional, ATR-based)
-- Risk Scenario Simulator (Monte Carlo, crisis replay)
-- DeFi Health Score
-
-### 🧠 Intelligence
-- Genetic Strategy Evolution (DNA encoding, crossover, mutation)
-- Agent Learning (pattern recognition, regime detection)
-- Market Microstructure (VPIN, whale detection, order flow)
-- Swarm Intelligence (voting, consensus, signal aggregation)
-- Prediction Markets (LMSR automated market maker)
-- Sentiment Analysis, Multi-timeframe Analysis
-
-### 👥 Social
-- Copy Trading & Social Trading
-- Multi-Agent Squads
-- Trust Graph (PageRank, sybil resistance)
-- Strategy Tournaments
-- Agent Marketplace (reputation, disputes)
-- On-Chain DAO Governance
-
-### 🏗️ Infrastructure
-- Pyth Oracle (real-time price feeds)
-- Data Pipeline & ETL
-- Agent Orchestration (DAG workflows)
-- DeFi Protocol Aggregator (6 Solana protocols)
-- Bridge Monitor (Wormhole, deBridge, Allbridge)
-- WebSocket feeds, Webhooks
-- Telemetry & Observability
-
-### 🆔 Identity & Compliance
-- Agent Identity (DIDs, verifiable credentials)
-- Compliance & Audit (tamper-evident logs, KYC)
-- Agent Insurance (pools, claims, premiums)
-- Token Launch & Bonding Curves
-- Encrypted Agent Communication
-
-## Live Proofs
-
-| Action | Transaction |
-|--------|-------------|
-| Sell SOL→USDC | `3XmPquL...sZdKf` |
-| Buy USDC→SOL | `5qZERks...x8kG7` |
-
-
-Wallet: `7GciqigwwRM8HANqDTF1GjAq6yKsS2odvorAaTUSaYkJ`
-
-## Stats
-
-- **1,264 tests** across 90 test files
-- **130 source files**, 67,651 lines of TypeScript
-- **352 API endpoints**
-- **90+ features** across 6 domains
-- **2 live mainnet** Jupiter swaps
-
-
-## Architecture
-
-```
-Agent → Register → Strategy Selection → Risk Validation (6 layers)
-  → Smart Order Routing → Execution → Receipt → Audit Log
-       ↓                                    ↓
-  Self-Improving Flywheel            Trust Graph Update
-  (profits → inference               (reputation, PageRank,
-   → strategy evolution)              sybil resistance)
-```
-
-## Run Locally
-
-```bash
-git clone https://github.com/tomi204/colosseum-ai-agent-trading-api
-cd colosseum-ai-agent-trading-api
+# Install
 npm install
-cp .env.example .env  # configure your keys
+
+# Configure (add your Solana RPC + private key)
+cp .env.example .env
+
+# Run
 npm run dev
 ```
 
-## Run Tests
+## Core Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/snipe` | Buy or sell any token by mint address |
+| `POST` | `/snipe/analyze` | Check liquidity before buying |
+| `GET` | `/snipe/portfolio` | All positions with live prices + P&L |
+| `GET` | `/snipe/strategy` | View default exit strategy |
+| `PUT` | `/snipe/strategy` | Override default strategy |
+| `PUT` | `/snipe/positions/{mint}/strategy` | Override strategy for one position |
+| `GET` | `/snipe/trades` | Trade history (includes auto-exits) |
+| `GET` | `/snipe/wallet` | Wallet status |
+
+## Default Strategy
+
+| Parameter | Default | What It Does |
+|-----------|---------|--------------|
+| Take Profit | +30% | Sell when price rises 30% above entry |
+| Stop Loss | -15% | Sell when price drops 15% below entry |
+| Trailing Stop | -20% | Sell when price drops 20% from its peak |
+| Moon Bag | 20% | Keep 20% of tokens on TP (ride further upside) |
+| Re-Entry | -25% | Auto buy back when price dips 25% from TP sell |
+| Re-Entry Amount | 0.01 SOL | SOL per re-entry buy |
+| Max Re-Entries | 2 | Maximum dip buys per token |
+
+All configurable via `.env`, API, or per-trade.
+
+## Features
+
+- **Direct Token Trading** — Buy/sell any Solana SPL token by mint address via Jupiter DEX
+- **Auto Exit Management** — TP, SL, trailing stop run automatically in the background
+- **Moon Bags** — Partial sell on TP, keep a % riding with trailing stop only
+- **Dip Re-Entry** — After TP, auto-buy back when price dips
+- **Position Tracking** — Live prices, entry/peak/current, P&L per position
+- **Persistence** — Positions, trades, strategy survive server restarts
+- **Self-Learning** — Analyzes trade patterns, adapts strategy based on performance
+- **Bot Integration** — Clean REST API designed for AI agent consumption
+- **Strategy Override** — Bot can override TP/SL/trailing per trade or per position
+
+## Self-Learning Pipeline
+
+Every snipe trade feeds into the learning engine:
+
+1. **Trade patterns** — Win rate, profit factor, expectancy per token
+2. **Market regime** — Trending, ranging, or volatile detection
+3. **Adaptive tuning** — Auto-adjusts TP/SL/moon bag based on recent results
+4. **Knowledge base** — Persisted to disk, builds over time
+
+View learning metrics: `GET /agents/snipe-bot/learning/metrics`
+
+## Deployment (Railway)
 
 ```bash
-npm test                              # all 1264 tests
-npx vitest run tests/strategies.test.ts  # specific file
+# Push to your repo, then on Railway:
+# 1. Connect your GitHub repo
+# 2. Set environment variables (see .env.example)
+# 3. Deploy — Railway uses the Dockerfile automatically
 ```
+
+Key env vars for Railway:
+- `SOLANA_RPC_URL` — Your Helius/QuickNode RPC
+- `SOLANA_PRIVATE_KEY_B58` — Trading wallet private key (base58)
+- `DEFAULT_MODE=live`
+- `LIVE_TRADING_ENABLED=true`
+- `LIVE_BROADCAST_ENABLED=true`
 
 ## Tech Stack
 
-- **Runtime:** Node.js + TypeScript
+- **Runtime:** Node.js 22 + TypeScript
 - **Framework:** Fastify
-- **Testing:** Vitest (1,264 tests)
 - **DEX:** Jupiter (Solana)
-- **Oracle:** Pyth Network
-- **Deployment:** Render
+- **Prices:** DexScreener API
+- **Persistence:** JSON file-based (data/)
+- **Deployment:** Railway (Docker)
 
 ## License
 
 MIT
-
----
-
-Built with 🔥 during the Colosseum Agent Hackathon, February 2026.

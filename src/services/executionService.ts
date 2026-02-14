@@ -176,20 +176,26 @@ export class ExecutionService {
       return;
     }
 
-    const strategySignal = this.strategyRegistry.evaluate(agent.strategyId, {
-      symbol: claim.symbol,
-      currentPriceUsd: marketPrice,
-      priceHistoryUsd: (snapshot.marketPriceHistoryUsd[claim.symbol] ?? []).map((point) => point.priceUsd),
-    });
+    // Allow manual/force trades to skip strategy evaluation.
+    // Pass { meta: { force: true } } in the trade intent to bypass strategy checks.
+    const forceExecution = claim.meta?.force === true;
 
-    if (strategySignal.action === 'hold') {
-      await this.markIntentRejected(claim.id, `strategy_hold:${agent.strategyId}`);
-      return;
-    }
+    if (!forceExecution) {
+      const strategySignal = this.strategyRegistry.evaluate(agent.strategyId, {
+        symbol: claim.symbol,
+        currentPriceUsd: marketPrice,
+        priceHistoryUsd: (snapshot.marketPriceHistoryUsd[claim.symbol] ?? []).map((point) => point.priceUsd),
+      });
 
-    if (strategySignal.action !== claim.side) {
-      await this.markIntentRejected(claim.id, `strategy_side_mismatch:${agent.strategyId}:${strategySignal.action}`);
-      return;
+      if (strategySignal.action === 'hold') {
+        await this.markIntentRejected(claim.id, `strategy_hold:${agent.strategyId}`);
+        return;
+      }
+
+      if (strategySignal.action !== claim.side) {
+        await this.markIntentRejected(claim.id, `strategy_side_mismatch:${agent.strategyId}:${strategySignal.action}`);
+        return;
+      }
     }
 
     const decision = this.riskEngine.evaluate({
@@ -319,9 +325,10 @@ export class ExecutionService {
     executionBase: ExecutionBase,
   ): Promise<void> {
     const symbolMint = this.config.trading.symbolToMint[intent.symbol];
-    const usdcMint = this.config.trading.symbolToMint.USDC;
+    // Use SOL as the base currency for swaps (wallet holds SOL, not USDC).
+    const baseMint = this.config.trading.symbolToMint.SOL;
 
-    if (!symbolMint || !usdcMint) {
+    if (!symbolMint || !baseMint) {
       await this.markIntentFailed(intent.id, 'mint_config_missing');
       return;
     }
@@ -329,15 +336,23 @@ export class ExecutionService {
     const isBuy = intent.side === 'buy';
     const feeParams = this.feeEngine.buildJupiterFeeParams();
 
+    // Get current SOL price to convert USD notional → SOL amount.
+    const snapshot = this.store.snapshot();
+    const solPriceUsd = snapshot.marketPricesUsd['SOL'] ?? 200; // fallback $200
+
+    // For buy: swap SOL → token. Amount = notionalUsd / solPrice in lamports (9 decimals).
+    // For sell: swap token → SOL. Amount = token quantity in smallest units.
+    const inputAmount = isBuy
+      ? this.toChainAmount('SOL', executionBase.grossNotionalUsd / solPriceUsd)
+      : this.toChainAmount(intent.symbol, executionBase.grossNotionalUsd / executionBase.priceUsd);
+
     const quote = await retryWithBackoff(
       () => this.jupiterClient.quote({
-        inputMint: isBuy ? usdcMint : symbolMint,
-        outputMint: isBuy ? symbolMint : usdcMint,
-        amount: this.toChainAmount(
-          isBuy ? 'USDC' : intent.symbol,
-          executionBase.grossNotionalUsd / (isBuy ? 1 : executionBase.priceUsd),
-        ),
-        slippageBps: 50,
+        inputMint: isBuy ? baseMint : symbolMint,
+        outputMint: isBuy ? symbolMint : baseMint,
+        amount: inputAmount,
+        // Higher slippage for meme coins (3%) to avoid failed swaps.
+        slippageBps: 300,
         platformFeeBps: feeParams.platformFeeBps,
       }),
       {

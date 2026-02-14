@@ -16,7 +16,7 @@ const parseNumber = (input: string | undefined, fallback: number): number => {
 
 export const config = {
   app: {
-    name: 'colosseum-ai-agent-trading-api',
+    name: 'sesame-trading-api',
     env: process.env.NODE_ENV ?? 'development',
     port: parseNumber(process.env.PORT, 8787),
   },

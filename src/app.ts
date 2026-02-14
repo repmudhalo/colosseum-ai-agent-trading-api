@@ -16,6 +16,7 @@ import { AutonomousService } from './services/autonomousService.js';
 import { CoordinationService } from './services/coordinationService.js';
 import { LendingMonitorService } from './services/lendingMonitorService.js';
 import { ExecutionService } from './services/executionService.js';
+import { SnipeService } from './services/snipeService.js';
 import { x402PaymentGate } from './services/paymentGate.js';
 import { TokenRevenueService } from './services/tokenRevenueService.js';
 import { TradeIntentService } from './services/tradeIntentService.js';
@@ -91,6 +92,7 @@ import { DataPipelineService } from './services/dataPipelineService.js';
 import { AgentIdentityService } from './services/agentIdentityService.js';
 import { PredictionMarketService } from './services/predictionMarketService.js';
 import { MeteoraService } from './services/meteoraService.js';
+import { SnipeLearningBridge } from './services/snipeLearningBridge.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -242,6 +244,16 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     return squad ? squad.memberIds : null;
   });
 
+  // Snipe service for direct token trading by mint address (for bot integrations).
+  // Loads persisted state from disk and auto-restarts price monitor for open positions.
+  const snipeService = new SnipeService(config);
+  await snipeService.init();
+
+  // Bridge: feeds snipe trades into the learning pipeline (StateStore + AgentLearningService).
+  // Writes ExecutionRecords for analytics, triggers learning cycles, and auto-adjusts strategy.
+  const snipeLearningBridge = new SnipeLearningBridge(stateStore, agentLearningService, snipeService);
+  snipeLearningBridge.start();
+
   const x402Policy = await loadX402Policy(config.payments.x402PolicyFile, config.payments.x402RequiredPaths);
   app.addHook('preHandler', x402PaymentGate(config.payments, stateStore, x402Policy));
 
@@ -333,6 +345,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     agentIdentityService,
     dataPipelineService,
     meteoraService,
+    snipeService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();

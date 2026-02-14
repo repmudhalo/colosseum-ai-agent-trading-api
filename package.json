@@ -1,7 +1,7 @@
 {
-  "name": "colosseum-ai-agent-trading-api",
-  "version": "0.1.0",
-  "description": "Autonomous AI-agent trading API MVP for the Colosseum Agent Hackathon",
+  "name": "sesame-trading-api",
+  "version": "1.0.0",
+  "description": "Sesame — Autonomous Solana meme coin trading arm with auto TP/SL, moon bags, dip re-entry, and self-learning",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -19,9 +19,10 @@
   "keywords": [
     "solana",
     "jupiter",
+    "meme-coins",
+    "trading-bot",
     "ai-agents",
-    "trading",
-    "colosseum"
+    "sesame"
   ],
   "author": "",
   "license": "MIT",
