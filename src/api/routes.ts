@@ -659,6 +659,20 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     };
   });
 
+  // ─── SKILL.md — Live skill file for agent consumption ──────────────
+  // Serves the SKILL.md as plain text so bots can fetch it from a URL.
+  app.get('/skill', async (_request, reply) => {
+    const { readFile } = await import('node:fs/promises');
+    const { resolve } = await import('node:path');
+    try {
+      const skillPath = resolve(process.cwd(), 'SKILL.md');
+      const content = await readFile(skillPath, 'utf-8');
+      return reply.type('text/markdown; charset=utf-8').send(content);
+    } catch {
+      return reply.code(404).send('SKILL.md not found');
+    }
+  });
+
   app.get('/health', async () => {
     const state = deps.store.snapshot();
     const runtime = deps.getRuntimeMetrics();
