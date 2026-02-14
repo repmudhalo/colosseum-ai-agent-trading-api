@@ -4,6 +4,7 @@ data
 .env.*
 dist
 *.md
+!SKILL.md
 .git
 .DS_Store
 coverage
