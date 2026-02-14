@@ -7,3 +7,9 @@ healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
+
+# Persistent volume — survives redeploys and restarts.
+# Stores: state.json, snipe-state.json, events.ndjson, charts/*.png
+[[mounts]]
+mountPath = "/app/data"
+name = "sesame-data"

@@ -49,6 +49,10 @@ npm run dev
 | `PUT` | `/snipe/positions/{mint}/strategy` | Override strategy for one position |
 | `GET` | `/snipe/trades` | Trade history (includes auto-exits) |
 | `GET` | `/snipe/wallet` | Wallet status |
+| `POST` | `/charts/capture` | Manually capture a chart screenshot |
+| `GET` | `/charts` | List all chart captures |
+| `GET` | `/charts/image/{filename}` | Serve a chart PNG |
+| `POST` | `/charts/upload` | Upload a reference chart (base64) |
 
 ## Default Strategy
 
@@ -87,6 +91,12 @@ Every snipe trade feeds into the learning engine:
 
 View learning metrics: `GET /agents/snipe-bot/learning/metrics`
 
+## Production URL
+
+```
+https://timmy-agent-trading-api-production.up.railway.app
+```
+
 ## Deployment (Railway)
 
 ```bash
@@ -94,6 +104,7 @@ View learning metrics: `GET /agents/snipe-bot/learning/metrics`
 # 1. Connect your GitHub repo
 # 2. Set environment variables (see .env.example)
 # 3. Deploy — Railway uses the Dockerfile automatically
+# Data persists via a mounted volume at /app/data (configured in railway.toml)
 ```
 
 Key env vars for Railway:

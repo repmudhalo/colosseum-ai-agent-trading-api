@@ -97,6 +97,7 @@ import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
 import { SnipeService } from '../services/snipeService.js';
+import { ChartCaptureService } from '../services/chartCaptureService.js';
 
 interface RouteDeps {
   config: AppConfig;
@@ -188,6 +189,7 @@ interface RouteDeps {
   meteoraService: MeteoraService;
   getRuntimeMetrics: () => RuntimeMetrics;
   snipeService: SnipeService;
+  chartCaptureService: ChartCaptureService;
 }
 
 const registerAgentSchema = z.object({
@@ -5695,5 +5697,90 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(404).send({ error: 'No open position found for this mint address.' });
     }
     return position;
+  });
+
+  // ─────────────────────────────────────────────────────────
+  // Chart Capture Routes — Visual chart pattern library
+  // ─────────────────────────────────────────────────────────
+
+  /**
+   * POST /charts/capture — Manually capture a chart screenshot.
+   * Body: { mintAddress, tag? }
+   */
+  const chartCaptureSchema = z.object({
+    mintAddress: z.string().min(32).max(44),
+    tag: z.string().max(200).optional(),
+  });
+
+  app.post('/charts/capture', async (request, reply) => {
+    const parse = chartCaptureSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+    }
+    const result = await deps.chartCaptureService.capture(parse.data.mintAddress, 'manual', null, null, parse.data.tag ?? null);
+    if (!result) {
+      return reply.code(500).send({ error: 'Chart capture failed. The page may not have loaded.' });
+    }
+    return result;
+  });
+
+  /**
+   * GET /charts — List all chart captures.
+   * Query: ?mint=xxx&trigger=buy&limit=50
+   */
+  app.get('/charts', async (request) => {
+    const q = request.query as { mint?: string; trigger?: string; limit?: string };
+    const limit = q.limit ? parseInt(q.limit, 10) : 50;
+    return deps.chartCaptureService.getLibrary(q.mint, q.trigger, limit);
+  });
+
+  /**
+   * GET /charts/image/:filename — Serve a chart image file.
+   */
+  app.get('/charts/image/:filename', async (request, reply) => {
+    const { filename } = request.params as { filename: string };
+    // Security: only allow .png files, no path traversal.
+    if (!filename.endsWith('.png') || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return reply.code(400).send({ error: 'Invalid filename' });
+    }
+    const filePath = deps.chartCaptureService.getImagePath(filename);
+    try {
+      const { createReadStream } = await import('node:fs');
+      const stream = createReadStream(filePath);
+      return reply.type('image/png').send(stream);
+    } catch {
+      return reply.code(404).send({ error: 'Image not found' });
+    }
+  });
+
+  /**
+   * POST /charts/upload — Upload a reference ("good looking") chart image.
+   * Expects multipart/form-data or a JSON body with base64-encoded image.
+   * Body: { mintAddress, image: "base64string", tag? }
+   */
+  const chartUploadSchema = z.object({
+    mintAddress: z.string().min(32).max(44),
+    image: z.string().min(100), // Base64-encoded PNG.
+    tag: z.string().max(200).optional(),
+  });
+
+  app.post('/charts/upload', async (request, reply) => {
+    const parse = chartUploadSchema.safeParse(request.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+    }
+
+    // Decode base64 image data.
+    const imageBuffer = Buffer.from(parse.data.image, 'base64');
+    if (imageBuffer.length < 100) {
+      return reply.code(400).send({ error: 'Invalid image data' });
+    }
+
+    const result = await deps.chartCaptureService.saveReference(
+      parse.data.mintAddress,
+      imageBuffer,
+      parse.data.tag ?? null,
+    );
+    return result;
   });
 }

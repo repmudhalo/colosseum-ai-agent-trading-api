@@ -5,7 +5,7 @@ You are connected to **Sesame**, a live Solana trading arm that buys/sells any S
 ## Base URL
 
 ```
-https://YOUR_DEPLOYED_URL
+https://timmy-agent-trading-api-production.up.railway.app
 ```
 
 ## Core Workflow
@@ -136,6 +136,26 @@ GET /snipe/trades             — Trade history (includes auto-exits + re-entrie
 GET /snipe/trades?mint={mint}&limit=20
 GET /snipe/wallet             — Wallet status
 ```
+
+### Chart Screenshots
+
+Sesame auto-captures TradingView chart screenshots (via DexScreener) on every buy, sell, and auto-exit.
+
+```
+POST /charts/capture          — Manual chart capture
+  Body: { "mintAddress": "...", "tag": "optional note" }
+
+GET  /charts                  — List all captures
+  Query: ?mint={mint}&trigger=buy&limit=50
+
+GET  /charts/image/{filename} — Serve a chart PNG image
+
+POST /charts/upload           — Upload a reference "good looking" chart
+  Body: { "mintAddress": "...", "image": "base64png", "tag": "good entry" }
+```
+
+Charts are stored with metadata (price at capture, entry price, % change, trigger reason).
+Use `/charts/upload` to add your own "reference" charts so Sesame can compare patterns.
 
 ## How Auto-Management Works
 

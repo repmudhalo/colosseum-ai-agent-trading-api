@@ -93,6 +93,7 @@ import { AgentIdentityService } from './services/agentIdentityService.js';
 import { PredictionMarketService } from './services/predictionMarketService.js';
 import { MeteoraService } from './services/meteoraService.js';
 import { SnipeLearningBridge } from './services/snipeLearningBridge.js';
+import { ChartCaptureService } from './services/chartCaptureService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
 
@@ -254,6 +255,11 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   const snipeLearningBridge = new SnipeLearningBridge(stateStore, agentLearningService, snipeService);
   snipeLearningBridge.start();
 
+  // Chart capture: screenshots DexScreener TradingView charts on buy/sell/auto-exit.
+  // Builds a visual library of chart patterns for future pattern recognition.
+  const chartCaptureService = new ChartCaptureService(config);
+  await chartCaptureService.init();
+
   const x402Policy = await loadX402Policy(config.payments.x402PolicyFile, config.payments.x402RequiredPaths);
   app.addHook('preHandler', x402PaymentGate(config.payments, stateStore, x402Policy));
 
@@ -346,6 +352,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     dataPipelineService,
     meteoraService,
     snipeService,
+    chartCaptureService,
     x402Policy,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
