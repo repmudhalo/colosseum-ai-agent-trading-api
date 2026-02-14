@@ -473,6 +473,7 @@ export class SnipeService {
           position.autoExitReason = 'closed_externally';
           position.lastTradeAt = new Date().toISOString();
           this.schedulePersist();
+          console.warn(`[snipe] Position closed (wallet has no balance): ${position.mintAddress}`);
         }
       }
     } catch {

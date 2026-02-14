@@ -52,55 +52,56 @@ export class JupiterClient {
 
   /**
    * Get the wallet's SPL token balance for a given mint.
-   * Used when adopting a manually opened position so Sesame can manage it.
+   * Checks both Token and Token-2022 programs so meme coins are found.
    */
   async getTokenBalance(mintAddress: string): Promise<{ amount: string; decimals: number } | null> {
-    if (!this.connection || !this.signer) return null;
-
-    const mint = new PublicKey(mintAddress);
-    const accounts = await this.connection.getParsedTokenAccountsByOwner(this.signer.publicKey, {
-      mint,
-    });
-
-    if (!accounts.value?.length) return null;
-    const info = accounts.value[0]?.account?.data?.parsed?.info;
-    if (!info?.tokenAmount) return null;
-
-    const amount = info.tokenAmount.amount as string;
-    const decimals = Number(info.tokenAmount.decimals ?? 0);
-    if (amount === '0') return null;
-
-    return { amount, decimals };
+    const all = await this.getAllTokenBalances();
+    const found = all.find((b) => b.mintAddress === mintAddress);
+    return found ? { amount: found.amount, decimals: found.decimals } : null;
   }
 
   /**
    * List all SPL token accounts in the wallet with non-zero balance.
-   * Used to auto-discover manually opened positions so Sesame can adopt them.
+   * Queries both the legacy Token program and Token-2022 so meme coins
+   * created with Token-2022 are included (otherwise reconcile would mark them closed).
    */
   async getAllTokenBalances(): Promise<Array<{ mintAddress: string; amount: string; decimals: number }>> {
     if (!this.connection || !this.signer) return [];
 
-    // SPL Token program ID — required filter for getParsedTokenAccountsByOwner.
     const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-    const accounts = await this.connection.getParsedTokenAccountsByOwner(this.signer.publicKey, {
-      programId: TOKEN_PROGRAM_ID,
-    });
+    const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
-    const result: Array<{ mintAddress: string; amount: string; decimals: number }> = [];
-    for (const { account } of accounts.value) {
+    const [legacyAccounts, token2022Accounts] = await Promise.all([
+      this.connection.getParsedTokenAccountsByOwner(this.signer.publicKey, { programId: TOKEN_PROGRAM_ID }),
+      this.connection.getParsedTokenAccountsByOwner(this.signer.publicKey, { programId: TOKEN_2022_PROGRAM_ID }),
+    ]);
+
+    const byMint = new Map<string, { amount: string; decimals: number }>();
+
+    for (const { account } of legacyAccounts.value) {
       const info = account?.data?.parsed?.info;
       const mint = info?.mint;
       const tokenAmount = info?.tokenAmount;
       if (!mint || !tokenAmount) continue;
       const amount = tokenAmount.amount as string;
       if (amount === '0') continue;
-      result.push({
-        mintAddress: mint,
-        amount,
-        decimals: Number(tokenAmount.decimals ?? 0),
-      });
+      byMint.set(mint, { amount, decimals: Number(tokenAmount.decimals ?? 0) });
     }
-    return result;
+    for (const { account } of token2022Accounts.value) {
+      const info = account?.data?.parsed?.info;
+      const mint = info?.mint;
+      const tokenAmount = info?.tokenAmount;
+      if (!mint || !tokenAmount) continue;
+      const amount = tokenAmount.amount as string;
+      if (amount === '0') continue;
+      byMint.set(mint, { amount, decimals: Number(tokenAmount.decimals ?? 0) });
+    }
+
+    return Array.from(byMint.entries()).map(([mintAddress, { amount, decimals }]) => ({
+      mintAddress,
+      amount,
+      decimals,
+    }));
   }
 
   async quote(params: JupiterQuoteRequest): Promise<JupiterQuoteResponse> {
