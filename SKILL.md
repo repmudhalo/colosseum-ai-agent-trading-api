@@ -16,6 +16,22 @@ https://timmy-agent-trading-api-production.up.railway.app
 4. Optionally **override strategy** on any position at any time
 5. Check **trade history** to see auto-exits and re-entries
 
+## Heartbeat: Check Trade Status Regularly
+
+**Poll Sesame on a fixed interval (e.g. every 60–120 seconds)** so you always have up-to-date trade status.
+
+| What to check | Endpoint | Use for |
+|---------------|----------|---------|
+| **Full snapshot** | `GET /snipe/portfolio` | Open positions (with live prices, P&L, strategy), watched-for-re-entry tokens, default strategy. **Use this as your main heartbeat.** |
+| **Wallet** | `GET /snipe/wallet` | SOL balance and whether the snipe service is ready. Optional, e.g. once per session. |
+| **Recent activity** | `GET /snipe/trades?limit=20` | Latest fills, auto-exits, re-entries. Poll when you need to react to new trades. |
+| **Single position** | `GET /snipe/positions/{mintAddress}` | Deeper detail for one token. |
+
+**Recommended heartbeat:** Call `GET /snipe/portfolio` every **60 seconds** (or 120 if you prefer less traffic). Use the response to:
+- See all open positions and their current price, entry, % change, and exit strategy.
+- See tokens being watched for re-entry (after a take-profit).
+- Decide if you want to override strategy on a position or leave it to Sesame.
+
 ## API Endpoints
 
 ### Buy a Token
@@ -201,11 +217,12 @@ After taking profit (if `reEntryEnabled`):
 1. **Always analyze before buying.** Only buy if `hasLiquidity` is `true`.
 2. **Use small amounts.** 0.01-0.05 SOL per trade.
 3. **Trust the auto-manager.** It handles TP, SL, moon bags, and re-entries.
-4. **Override when needed.** Use the strategy endpoints to adjust per-position.
-5. **Check trade history.** `GET /snipe/trades` shows auto-exits, moon bags, and re-entries.
-6. **Always tag trades.** Helps track strategy performance.
-7. **Set moonBagPct to 0** if you want clean full exits on TP.
-8. **Set reEntryEnabled to false** if you don't want auto dip-buys.
+4. **Poll trade status on a heartbeat.** Call `GET /snipe/portfolio` every 60–120 seconds to stay in sync with open positions and re-entry watches.
+5. **Override when needed.** Use the strategy endpoints to adjust per-position.
+6. **Check trade history.** `GET /snipe/trades` shows auto-exits, moon bags, and re-entries.
+7. **Always tag trades.** Helps track strategy performance.
+8. **Set moonBagPct to 0** if you want clean full exits on TP.
+9. **Set reEntryEnabled to false** if you don't want auto dip-buys.
 
 ## Example Full Cycle
 
