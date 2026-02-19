@@ -5864,6 +5864,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // LORE — Status (for dashboard) + Webhook
   // ─────────────────────────────────────────────────────────
 
+  // Tracks the last box type we traded on per mint.
+  // Only buy again if the token moved to a DIFFERENT box (e.g. Gamble → Fastest).
+  const loreLastBoxPerMint = new Map<string, string>();
+
   /**
    * GET /lore/status — LORE integration status for the control dashboard.
    * Does not expose the webhook secret.
@@ -5875,6 +5879,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       autoTradeEnabled: Boolean(lore.autoTradeEnabled),
       autoTradeBoxTypes: lore.autoTradeBoxTypes ?? [],
       autoTradeAmountSol: lore.autoTradeAmountSol ?? 0.02,
+      trackedTokens: loreLastBoxPerMint.size,
     };
   });
 
@@ -5941,13 +5946,20 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       data,
     });
 
-    // Optional: auto-trade when a token is featured/moved/reentry in allowed box types.
+    // Auto-trade when a token is featured/moved/reentry in allowed box types.
+    // Only buy if the token moved to a DIFFERENT box than the last time we traded it.
+    // e.g. Gamble → buy, then Fastest → buy again, but Fastest → Fastest → skip.
     const loreConfig = deps.config.lore;
     const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
     const wouldTrade = tradeEvents.includes(event);
     const boxType = d?.boxType;
     const boxAllowed = boxType && loreConfig?.autoTradeBoxTypes.includes(boxType);
     const mintValid = mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
+
+    // Clean up tracking when a token is removed from featured boxes.
+    if (event === 'token_removed' && mint) {
+      loreLastBoxPerMint.delete(mint);
+    }
 
     if (wouldTrade && !loreConfig?.autoTradeEnabled) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'auto_trade_disabled' });
@@ -5956,23 +5968,31 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     } else if (wouldTrade && (!boxAllowed || !mintValid)) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, boxType, reason: 'box_type_not_allowed_or_invalid_mint' });
     } else if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady() && wouldTrade && boxAllowed && mintValid) {
-      const tag = `lore-${event}-${boxType}`;
-      await deps.logger.log('info', 'lore.autotrade.triggered', {
-        event,
-        symbol,
-        mint,
-        boxType,
-        amountSol: loreConfig.autoTradeAmountSol,
-        tag,
-      });
-      deps.snipeService.snipe({
-        mintAddress: mint!,
-        side: 'buy',
-        amountSol: loreConfig.autoTradeAmountSol,
-        tag,
-      }).catch(async (err) => {
-        await deps.logger.log('warn', 'lore.autotrade.failed', { event, symbol, mint, error: String(err) });
-      });
+      const previousBox = loreLastBoxPerMint.get(mint!);
+      if (previousBox === boxType) {
+        await deps.logger.log('info', 'lore.autotrade.skipped', {
+          event, symbol, mint, boxType,
+          reason: 'same_box_as_last_trade',
+          previousBox,
+        });
+      } else {
+        loreLastBoxPerMint.set(mint!, boxType!);
+        const tag = `lore-${event}-${boxType}` + (previousBox ? `-from-${previousBox}` : '');
+        await deps.logger.log('info', 'lore.autotrade.triggered', {
+          event, symbol, mint, boxType,
+          previousBox: previousBox ?? null,
+          amountSol: loreConfig.autoTradeAmountSol,
+          tag,
+        });
+        deps.snipeService.snipe({
+          mintAddress: mint!,
+          side: 'buy',
+          amountSol: loreConfig.autoTradeAmountSol,
+          tag,
+        }).catch(async (err) => {
+          await deps.logger.log('warn', 'lore.autotrade.failed', { event, symbol, mint, error: String(err) });
+        });
+      }
     }
 
     return reply.code(200).send({ received: true, event });
