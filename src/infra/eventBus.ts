@@ -70,7 +70,8 @@ export type EventType =
   | 'snipe.trade'
   | 'snipe.auto_exit'
   | 'snipe.re_entry'
-  | 'snipe.strategy_updated';
+  | 'snipe.strategy_updated'
+  | 'lore.signal';
 
 export type EventCallback = (event: EventType, data: unknown) => void;
 

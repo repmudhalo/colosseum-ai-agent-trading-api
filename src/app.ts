@@ -111,6 +111,22 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     logger: false,
   });
 
+  // Store raw JSON body for HMAC verification (e.g. LORE webhooks).
+  app.addContentTypeParser('application/json', (req, payload, done) => {
+    const chunks: Buffer[] = [];
+    payload.on('data', (chunk: Buffer) => chunks.push(chunk));
+    payload.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      (req as unknown as { rawBody?: string }).rawBody = raw;
+      try {
+        done(null, JSON.parse(raw));
+      } catch (e) {
+        done(e as Error, undefined);
+      }
+    });
+    payload.on('error', (e) => done(e, undefined));
+  });
+
   // Register WebSocket plugin first so routes can use { websocket: true }.
   await app.register(fastifyWebSocket);
 

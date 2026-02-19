@@ -101,6 +101,16 @@ export const config = {
     maxImageBytes: parseNumber(process.env.CLAWPUMP_MAX_IMAGE_BYTES, 2_000_000),
     launchAttemptHistoryLimit: parseNumber(process.env.CLAWPUMP_LAUNCH_HISTORY_LIMIT, 200),
   },
+  lore: {
+    /** HMAC secret for webhook signature verification (whsec_...). Required to accept LORE webhooks. */
+    webhookSecret: process.env.LORE_WEBHOOK_SECRET,
+    /** If true, open a snipe position when a token is featured/moved/reentry in allowed box types. */
+    autoTradeEnabled: parseBool(process.env.LORE_AUTO_TRADE_ENABLED, false),
+    /** Comma-separated box types to trade on (e.g. Fastest,Gamble). Ignored if autoTradeEnabled is false. */
+    autoTradeBoxTypes: (process.env.LORE_AUTO_TRADE_BOX_TYPES ?? 'Fastest,Gamble').split(',').map((s) => s.trim()).filter(Boolean),
+    /** SOL amount per LORE auto-trade. */
+    autoTradeAmountSol: parseNumber(process.env.LORE_AUTO_TRADE_AMOUNT_SOL, 0.02),
+  },
 };
 
 export type AppConfig = typeof config;

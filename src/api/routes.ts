@@ -5839,4 +5839,82 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     );
     return result;
   });
+
+  // ─────────────────────────────────────────────────────────
+  // LORE Webhook — Featured token signals from LORE platform
+  // ─────────────────────────────────────────────────────────
+
+  /**
+   * POST /webhooks/lore — Receive LORE featured-token events.
+   * Verifies HMAC-SHA256 signature, emits lore.signal, optionally auto-trades.
+   * See docs/WEBHOOK_INTEGRATION_GUIDE.md (or LORE backend docs).
+   */
+  app.post('/webhooks/lore', async (request, reply) => {
+    const secret = deps.config.lore?.webhookSecret;
+    if (!secret || secret.length < 10) {
+      return reply.code(503).send({ error: 'LORE webhook not configured. Set LORE_WEBHOOK_SECRET.' });
+    }
+
+    const rawBody = (request as unknown as { rawBody?: string }).rawBody;
+    if (typeof rawBody !== 'string') {
+      return reply.code(400).send({ error: 'Missing or invalid body.' });
+    }
+
+    const signature = request.headers['x-lore-signature'] as string | undefined;
+    const eventName = request.headers['x-lore-event'] as string | undefined;
+    const timestamp = request.headers['x-lore-timestamp'] as string | undefined;
+    const subscriber = request.headers['x-lore-subscriber'] as string | undefined;
+
+    if (!signature) {
+      return reply.code(401).send({ error: 'Missing X-LORE-Signature.' });
+    }
+
+    const crypto = await import('node:crypto');
+    const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    const sigBuf = Buffer.from(signature, 'utf8');
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(expBuf, sigBuf)) {
+      return reply.code(401).send({ error: 'Invalid signature.' });
+    }
+
+    let payload: { event?: string; timestamp?: string; data?: unknown };
+    try {
+      payload = typeof request.body === 'object' && request.body !== null ? (request.body as { event?: string; timestamp?: string; data?: unknown }) : JSON.parse(rawBody);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid JSON.' });
+    }
+
+    const event = payload.event ?? eventName ?? 'unknown';
+    const data = payload.data ?? {};
+    const ts = payload.timestamp ?? timestamp ?? new Date().toISOString();
+
+    eventBus.emit('lore.signal', {
+      event,
+      timestamp: ts,
+      subscriber,
+      data,
+    });
+
+    // Optional: auto-trade when a token is featured/moved/reentry in allowed box types.
+    const loreConfig = deps.config.lore;
+    if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady()) {
+      const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
+      if (tradeEvents.includes(event)) {
+        const d = data as { boxType?: string; token?: { address?: string } };
+        const boxType = d?.boxType;
+        const mint = d?.token?.address;
+        if (boxType && loreConfig.autoTradeBoxTypes.includes(boxType) && mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
+          const tag = `lore-${event}-${boxType}`;
+          deps.snipeService.snipe({
+            mintAddress: mint,
+            side: 'buy',
+            amountSol: loreConfig.autoTradeAmountSol,
+            tag,
+          }).catch(() => { /* non-fatal */ });
+        }
+      }
+    }
+
+    return reply.code(200).send({ received: true, event });
+  });
 }

@@ -283,6 +283,14 @@ After taking profit (if `reEntryEnabled`):
    → Cycle repeats (up to maxReEntries times)
 ```
 
+## LORE Integration (Featured Token Signals)
+
+Sesame receives **LORE** featured-token events at **POST /webhooks/lore**. LORE sends `token_featured`, `token_moved`, `token_reentry`, `token_removed`, and `candidates_updated`. Each delivery is signed with HMAC-SHA256; the server verifies the signature using `LORE_WEBHOOK_SECRET`.
+
+- **Events:** Incoming payloads are emitted on the internal event bus as **`lore.signal`** so agents or other services can react (e.g. open trades, log, or filter).
+- **Auto-trade (optional):** If `LORE_AUTO_TRADE_ENABLED=true`, Sesame will open a snipe buy for `token_featured`, `token_moved`, and `token_reentry` when `data.boxType` is in `LORE_AUTO_TRADE_BOX_TYPES` (e.g. `Fastest,Gamble`), using `LORE_AUTO_TRADE_AMOUNT_SOL` per trade. Auto-trade runs only when the snipe service is ready; failures do not affect the webhook 200 response.
+- **Env:** Set `LORE_WEBHOOK_SECRET` (required). Optionally set `LORE_AUTO_TRADE_ENABLED`, `LORE_AUTO_TRADE_BOX_TYPES`, `LORE_AUTO_TRADE_AMOUNT_SOL`. See `.env.example`.
+
 ## Error Handling
 
 - `"No liquidity found"` — No Jupiter routes. Skip it.
