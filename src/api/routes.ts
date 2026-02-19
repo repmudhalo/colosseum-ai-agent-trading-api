@@ -2,6 +2,9 @@ import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { AppConfig } from '../config.js';
 import { renderExperimentPage } from './experimentPage.js';
+import { renderPortfolioPage } from './portfolioPage.js';
+import { renderTradesPage } from './tradesPage.js';
+import { renderStrategyPage } from './strategyPage.js';
 import { renderDocsPage } from './docsPage.js';
 import { connectedClients } from './websocket.js';
 import { FeeEngine } from '../domain/fee/feeEngine.js';
@@ -281,6 +284,18 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get('/dashboard', async (_request, reply) => reply
     .type('text/html; charset=utf-8')
     .send(renderExperimentPage()));
+
+  app.get('/dashboard/portfolio', async (_request, reply) => reply
+    .type('text/html; charset=utf-8')
+    .send(renderPortfolioPage()));
+
+  app.get('/dashboard/trades', async (_request, reply) => reply
+    .type('text/html; charset=utf-8')
+    .send(renderTradesPage()));
+
+  app.get('/dashboard/strategy', async (_request, reply) => reply
+    .type('text/html; charset=utf-8')
+    .send(renderStrategyPage()));
 
   app.get('/agents', async () => {
     const state = deps.store.snapshot();
