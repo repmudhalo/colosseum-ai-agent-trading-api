@@ -370,6 +370,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     snipeService,
     chartCaptureService,
     x402Policy,
+    logger,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
       return {

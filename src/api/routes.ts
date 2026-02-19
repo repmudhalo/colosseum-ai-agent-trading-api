@@ -10,6 +10,7 @@ import { SkillRegistry } from '../domain/skills/skillRegistry.js';
 import { StrategyRegistry } from '../domain/strategy/strategyRegistry.js';
 import { DomainError, ErrorCode, toErrorEnvelope } from '../errors/taxonomy.js';
 import { eventBus } from '../infra/eventBus.js';
+import { EventLogger } from '../infra/logger.js';
 import { StateStore } from '../infra/storage/stateStore.js';
 import { AgentService } from '../services/agentService.js';
 import { AnalyticsService } from '../services/analyticsService.js';
@@ -190,6 +191,7 @@ interface RouteDeps {
   getRuntimeMetrics: () => RuntimeMetrics;
   snipeService: SnipeService;
   chartCaptureService: ChartCaptureService;
+  logger: EventLogger;
 }
 
 const registerAgentSchema = z.object({
@@ -5841,8 +5843,22 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   // ─────────────────────────────────────────────────────────
-  // LORE Webhook — Featured token signals from LORE platform
+  // LORE — Status (for dashboard) + Webhook
   // ─────────────────────────────────────────────────────────
+
+  /**
+   * GET /lore/status — LORE integration status for the control dashboard.
+   * Does not expose the webhook secret.
+   */
+  app.get('/lore/status', async () => {
+    const lore = deps.config.lore ?? {};
+    return {
+      webhookConfigured: Boolean(lore.webhookSecret && lore.webhookSecret.length >= 10),
+      autoTradeEnabled: Boolean(lore.autoTradeEnabled),
+      autoTradeBoxTypes: lore.autoTradeBoxTypes ?? [],
+      autoTradeAmountSol: lore.autoTradeAmountSol ?? 0.02,
+    };
+  });
 
   /**
    * POST /webhooks/lore — Receive LORE featured-token events.
@@ -5887,6 +5903,18 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const event = payload.event ?? eventName ?? 'unknown';
     const data = payload.data ?? {};
     const ts = payload.timestamp ?? timestamp ?? new Date().toISOString();
+    const d = data as { boxType?: string; token?: { address?: string; symbol?: string; name?: string } };
+    const mint = d?.token?.address;
+    const symbol = d?.token?.symbol ?? mint?.slice(0, 8) ?? '?';
+
+    // Log every LORE webhook received (catch) — visible in console and data/events.ndjson
+    await deps.logger.log('info', 'lore.webhook.received', {
+      event,
+      subscriber,
+      symbol,
+      mint: mint ?? null,
+      boxType: d?.boxType ?? null,
+    });
 
     eventBus.emit('lore.signal', {
       event,
@@ -5897,22 +5925,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
     // Optional: auto-trade when a token is featured/moved/reentry in allowed box types.
     const loreConfig = deps.config.lore;
-    if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady()) {
-      const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
-      if (tradeEvents.includes(event)) {
-        const d = data as { boxType?: string; token?: { address?: string } };
-        const boxType = d?.boxType;
-        const mint = d?.token?.address;
-        if (boxType && loreConfig.autoTradeBoxTypes.includes(boxType) && mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) {
-          const tag = `lore-${event}-${boxType}`;
-          deps.snipeService.snipe({
-            mintAddress: mint,
-            side: 'buy',
-            amountSol: loreConfig.autoTradeAmountSol,
-            tag,
-          }).catch(() => { /* non-fatal */ });
-        }
-      }
+    const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
+    const wouldTrade = tradeEvents.includes(event);
+    const boxType = d?.boxType;
+    const boxAllowed = boxType && loreConfig?.autoTradeBoxTypes.includes(boxType);
+    const mintValid = mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
+
+    if (wouldTrade && !loreConfig?.autoTradeEnabled) {
+      await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'auto_trade_disabled' });
+    } else if (wouldTrade && !deps.snipeService.isReady()) {
+      await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'snipe_not_ready' });
+    } else if (wouldTrade && (!boxAllowed || !mintValid)) {
+      await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, boxType, reason: 'box_type_not_allowed_or_invalid_mint' });
+    } else if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady() && wouldTrade && boxAllowed && mintValid) {
+      const tag = `lore-${event}-${boxType}`;
+      await deps.logger.log('info', 'lore.autotrade.triggered', {
+        event,
+        symbol,
+        mint,
+        boxType,
+        amountSol: loreConfig.autoTradeAmountSol,
+        tag,
+      });
+      deps.snipeService.snipe({
+        mintAddress: mint!,
+        side: 'buy',
+        amountSol: loreConfig.autoTradeAmountSol,
+        tag,
+      }).catch(async (err) => {
+        await deps.logger.log('warn', 'lore.autotrade.failed', { event, symbol, mint, error: String(err) });
+      });
     }
 
     return reply.code(200).send({ received: true, event });

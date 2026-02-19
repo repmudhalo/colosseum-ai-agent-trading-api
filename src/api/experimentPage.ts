@@ -237,6 +237,43 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-
 <!-- Main Container -->
 <div class="container">
 
+  <!-- ████ AGENT CONTROL DASHBOARD ████ -->
+  <div class="section fade-in" id="control-dashboard">
+    <div class="section-title">🎛️ Agent Control Dashboard</div>
+    <div class="section-sub">LORE signals, trading arm status, and agents — all in one place. Data refreshes every 10s; LORE signals stream live via WebSocket.</div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-title"><span class="icon">📡</span> LORE</div>
+        <div id="lore-status-data"><div style="color:var(--muted);font-style:italic">Loading...</div></div>
+        <div style="margin-top:.6rem"><a href="/lore/status" class="btn-ghost" target="_blank">LORE status ↗</a></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">💰</span> Trading Arm (Snipe)</div>
+        <div id="snipe-status-data"><div style="color:var(--muted);font-style:italic">Loading...</div></div>
+        <div style="margin-top:.6rem;display:flex;gap:8px;flex-wrap:wrap">
+          <a href="/snipe/portfolio" class="btn-ghost" target="_blank">Portfolio</a>
+          <a href="/snipe/trades" class="btn-ghost" target="_blank">Trades</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">🤖</span> Agents</div>
+        <div id="control-agents-data"><div style="color:var(--muted);font-style:italic">Loading...</div></div>
+        <div style="margin-top:.6rem"><a href="/agents" class="btn-ghost" target="_blank">View all ↗</a></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:1.2rem">
+      <div class="card-title"><span class="icon">📥</span> Recent LORE signals
+        <span id="lore-feed-count" style="font-size:.7rem;color:var(--muted);margin-left:8px">(0)</span>
+      </div>
+      <div class="ws-feed" id="lore-signals-feed" style="max-height:200px">
+        <div style="color:var(--muted)">Waiting for LORE webhooks…</div>
+      </div>
+      <div style="margin-top:.6rem;font-size:.78rem;color:var(--muted)">Streamed live via WebSocket when tokens are featured, moved, or re-entry.</div>
+    </div>
+  </div>
+
+  <div class="glow-line"></div>
+
   <!-- ████ LIVE DEMO SECTION ████ -->
   <div class="section fade-in" id="demo-section" style="display:none">
     <div class="section-title">🎬 Live Demo Execution</div>
@@ -494,6 +531,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,sans-
     <div class="section-sub">Quick access to all endpoints — click to open in a new tab</div>
     <div style="display:flex;flex-wrap:wrap;gap:8px">
       <a href="/health" class="btn-sm" target="_blank">💚 Health</a>
+      <a href="/lore/status" class="btn-sm" target="_blank">📡 LORE</a>
+      <a href="/snipe/portfolio" class="btn-sm" target="_blank">💰 Portfolio</a>
       <a href="/agents" class="btn-sm" target="_blank">🤖 Agents</a>
       <a href="/strategies" class="btn-sm" target="_blank">📈 Strategies</a>
       <a href="/metrics" class="btn-sm" target="_blank">📊 Metrics</a>
@@ -800,11 +839,53 @@ async function loadMetrics() {
     kv('Treasury Entries', (tr.entries ? tr.entries.length : 0));
 }
 
+async function loadLoreStatus() {
+  const el = $('#lore-status-data');
+  if (!el) return;
+  const st = await api('/lore/status');
+  if (!st) { el.innerHTML = kv('Status', '<span class="dot dot-warn"></span>Unreachable'); return; }
+  el.innerHTML =
+    kv('Webhook', st.webhookConfigured ? '<span class="dot dot-ok"></span>Configured' : '<span class="dot dot-warn"></span>Not set') +
+    kv('Auto-trade', st.autoTradeEnabled ? '<span class="green">On</span>' : '<span class="muted">Off</span>') +
+    kv('Box types', (st.autoTradeBoxTypes && st.autoTradeBoxTypes.length) ? st.autoTradeBoxTypes.join(', ') : '—') +
+    kv('Amount/trade', (st.autoTradeAmountSol || 0) + ' SOL');
+}
+
+async function loadSnipeStatus() {
+  const el = $('#snipe-status-data');
+  if (!el) return;
+  const wallet = await api('/snipe/wallet');
+  const portfolio = await api('/snipe/portfolio');
+  if (!wallet) { el.innerHTML = kv('Status', '<span class="dot dot-warn"></span>Unreachable'); return; }
+  const ready = wallet.ready ? '<span class="dot dot-ok"></span>Ready' : '<span class="dot dot-warn"></span>Not ready';
+  const openCount = (portfolio && portfolio.openPositions) ? portfolio.openPositions.length : 0;
+  const tradesCount = (portfolio && portfolio.totalTrades !== undefined) ? portfolio.totalTrades : 0;
+  el.innerHTML =
+    kv('Wallet', ready) +
+    kv('Open positions', openCount) +
+    kv('Total trades', tradesCount) +
+    (wallet.walletAddress ? kv('Address', '<span class="mono" style="font-size:.7rem">' + String(wallet.walletAddress).slice(0, 8) + '…</span>') : '');
+}
+
+async function loadControlAgents() {
+  const el = $('#control-agents-data');
+  if (!el) return;
+  const a = await api('/agents');
+  if (!a || !a.agents) { el.innerHTML = '<div style="color:var(--muted)">No data</div>'; return; }
+  if (a.agents.length === 0) { el.innerHTML = '<div style="color:var(--muted)">No agents yet</div>'; return; }
+  el.innerHTML = a.agents.slice(0, 5).map(function(ag) {
+    return kv('<span class="mono" style="color:var(--cyan)">' + ag.id.substring(0, 8) + '…</span>', ag.name);
+  }).join('') + (a.agents.length > 5 ? '<div style="color:var(--muted);font-size:.75rem">+ ' + (a.agents.length - 5) + ' more</div>' : '');
+}
+
 function loadAll() {
   loadHealth();
   loadAgents();
   loadAutonomous();
   loadMetrics();
+  loadLoreStatus();
+  loadSnipeStatus();
+  loadControlAgents();
 }
 
 loadAll();
@@ -822,6 +903,7 @@ setInterval(loadAll, 10000);
     'agent.registered': '#34d399',
     'squad.created': '#f472b6',
     'squad.joined': '#fb923c',
+    'lore.signal': '#00d4ff',
     'connected': '#888',
   };
   let ws;
@@ -844,12 +926,32 @@ setInterval(loadAll, 10000);
       setTimeout(connect, 3000);
     };
     ws.onerror = function() { ws.close(); };
+    const recentLoreSignals = [];
+    const maxLoreSignals = 20;
+
     ws.onmessage = function(e) {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'connected') {
           $('#ws-clients').textContent = (msg.data && msg.data.clients) ? msg.data.clients : '?';
           return;
+        }
+        if (msg.type === 'lore.signal') {
+          recentLoreSignals.unshift({ ts: msg.ts, data: msg.data || {} });
+          if (recentLoreSignals.length > maxLoreSignals) recentLoreSignals.pop();
+          const loreFeed = $('#lore-signals-feed');
+          const d = msg.data || {};
+          const event = d.event || '?';
+          const token = (d.data && d.data.token) ? (d.data.token.symbol || d.data.token.address) : '?';
+          const boxType = (d.data && d.data.boxType) ? d.data.boxType : '';
+          const line = document.createElement('div');
+          line.className = 'ws-line';
+          line.innerHTML = '<span style="color:var(--muted)">' + (msg.ts ? new Date(msg.ts).toLocaleTimeString() : '') + '</span> <span style="color:#00d4ff;font-weight:700">' + event + '</span> ' + (token ? '<span style="color:var(--cyan)">' + String(token).substring(0, 12) + '</span>' : '') + (boxType ? ' <span style="color:var(--muted)">' + boxType + '</span>' : '');
+          if (recentLoreSignals.length === 1) loreFeed.innerHTML = '';
+          loreFeed.insertBefore(line, loreFeed.firstChild);
+          while (loreFeed.children.length > maxLoreSignals) loreFeed.removeChild(loreFeed.lastChild);
+          const countEl = $('#lore-feed-count');
+          if (countEl) countEl.textContent = '(' + recentLoreSignals.length + ')';
         }
         const feed = $('#event-feed');
         const color = colors[msg.type] || '#9ca3af';
