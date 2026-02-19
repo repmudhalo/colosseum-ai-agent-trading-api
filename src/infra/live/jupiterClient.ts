@@ -50,6 +50,13 @@ export class JupiterClient {
     return this.signer?.publicKey.toBase58();
   }
 
+  /** Native SOL balance in SOL (not lamports). Returns null if wallet is not configured. */
+  async getSolBalance(): Promise<number | null> {
+    if (!this.connection || !this.signer) return null;
+    const lamports = await this.connection.getBalance(this.signer.publicKey);
+    return lamports / 1e9;
+  }
+
   /**
    * Get the wallet's SPL token balance for a given mint.
    * Checks both Token and Token-2022 programs so meme coins are found.

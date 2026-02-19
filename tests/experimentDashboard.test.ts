@@ -14,16 +14,26 @@ describe('experiment dashboard routes', () => {
     }
   });
 
-  it('serves judge-facing dashboard html on /experiment', async () => {
+  it('serves dashboard html on /dashboard', async () => {
+    const tmpDir = await createTempDir();
+    ctx = await buildApp(buildTestConfig(tmpDir));
+
+    const res = await ctx.app.inject({ method: 'GET', url: '/dashboard' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.body).toContain('Sesame');
+    expect(res.body).toContain('/snipe/portfolio');
+  });
+
+  it('redirects /experiment to /dashboard', async () => {
     const tmpDir = await createTempDir();
     ctx = await buildApp(buildTestConfig(tmpDir));
 
     const res = await ctx.app.inject({ method: 'GET', url: '/experiment' });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('text/html');
-    expect(res.body).toContain('Timmy Agent Trading API');
-    expect(res.body).toContain('/receipts/verify/');
+    expect(res.statusCode).toBe(302);
+    expect(res.headers['location']).toBe('/dashboard');
   });
 
   it('returns registered agents list for dashboard selector', async () => {

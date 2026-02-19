@@ -276,7 +276,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     mode: deps.config.trading.defaultMode,
   }));
 
-  app.get('/experiment', async (_request, reply) => reply
+  app.get('/experiment', async (_request, reply) => reply.redirect('/dashboard'));
+
+  app.get('/dashboard', async (_request, reply) => reply
     .type('text/html; charset=utf-8')
     .send(renderExperimentPage()));
 
@@ -5659,6 +5661,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get('/snipe/wallet', async () => ({
     ready: deps.snipeService.isReady(),
     walletAddress: deps.snipeService.walletAddress() ?? null,
+    solBalance: await deps.snipeService.getSolBalance(),
     broadcastEnabled: deps.config.trading.liveBroadcastEnabled,
   }));
 

@@ -312,6 +312,7 @@ export class SnipeService {
 
   isReady(): boolean { return this.jupiterClient.isReadyForLive(); }
   walletAddress(): string | undefined { return this.jupiterClient.publicKey(); }
+  async getSolBalance(): Promise<number | null> { return this.jupiterClient.getSolBalance(); }
   getDefaultStrategy(): ExitStrategy { return { ...this.defaultStrategy }; }
 
   // ─── Public: Strategy Override ────────────────────────────────────────
