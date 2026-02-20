@@ -12,6 +12,10 @@ export const x402PaymentGate = (
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!config.x402Enabled) return;
 
+    // Never gate health or root so load balancers and probes always get 200.
+    const path = (request.url ?? '').split('?')[0] ?? '';
+    if (path === '/health' || path === '/') return;
+
     const paidEndpoint = findPaidEndpoint(policy, request.method, request.url);
     if (!paidEndpoint) return;
 

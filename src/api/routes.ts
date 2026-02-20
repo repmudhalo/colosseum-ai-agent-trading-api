@@ -296,25 +296,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   }));
 
   // Health check must be registered early so load balancers get 200 before any parametric routes.
-  app.get('/health', async () => {
-    const state = deps.store.snapshot();
-    const runtime = deps.getRuntimeMetrics();
-    return {
-      status: 'ok',
-      env: deps.config.app.env,
-      uptimeSeconds: runtime.uptimeSeconds,
-      pendingIntents: runtime.pendingIntents,
-      processPid: runtime.processPid,
-      defaultMode: deps.config.trading.defaultMode,
-      liveModeEnabled: deps.config.trading.liveEnabled,
-      wsClients: connectedClients(),
-      stateSummary: {
-        agents: Object.keys(state.agents).length,
-        intents: Object.keys(state.tradeIntents).length,
-        executions: Object.keys(state.executions).length,
-        receipts: Object.keys(state.executionReceipts).length,
-      },
-    };
+  // Always return 200 so replicas are never marked unhealthy due to transient metric errors.
+  app.get('/health', async (_request, reply) => {
+    try {
+      const state = deps.store.snapshot();
+      const runtime = deps.getRuntimeMetrics();
+      return reply.code(200).send({
+        status: 'ok',
+        env: deps.config.app.env,
+        uptimeSeconds: runtime.uptimeSeconds,
+        pendingIntents: runtime.pendingIntents,
+        processPid: runtime.processPid,
+        defaultMode: deps.config.trading.defaultMode,
+        liveModeEnabled: deps.config.trading.liveEnabled,
+        wsClients: connectedClients(),
+        stateSummary: {
+          agents: Object.keys(state.agents).length,
+          intents: Object.keys(state.tradeIntents).length,
+          executions: Object.keys(state.executions).length,
+          receipts: Object.keys(state.executionReceipts).length,
+        },
+      });
+    } catch (err) {
+      return reply.code(200).send({
+        status: 'ok',
+        env: deps.config.app.env ?? 'unknown',
+        uptimeSeconds: 0,
+        error: true,
+        message: err instanceof Error ? err.message : 'Health check error',
+      });
+    }
   });
 
   app.get('/experiment', async (_request, reply) => reply.redirect('/dashboard'));
