@@ -141,43 +141,31 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   await logger.init();
 
   // Database: PostgreSQL for LORE signal history and other persistent data.
-  // Initialize asynchronously to avoid blocking startup if database is slow/unavailable.
+  // Init in background so server can listen quickly and pass health checks.
   const database = new Database(config.database);
-  let dbAvailable = false;
-  try {
-    dbAvailable = await database.init();
-    if (dbAvailable) {
-      console.log('[Database] Connected to PostgreSQL');
-      // Run migrations on startup (non-blocking - errors are logged but don't stop startup)
-      try {
-        const migrationPath = path.resolve(process.cwd(), 'migrations', '001_create_lore_signals.sql');
-        const migrationSQL = await fs.readFile(migrationPath, 'utf-8');
-        // Run migration - if tables already exist, CREATE TABLE IF NOT EXISTS will handle it gracefully
-        const result = await database.query(migrationSQL);
-        if (result) {
+  void (async function initDatabase() {
+    try {
+      const ok = await database.init();
+      if (ok) {
+        console.log('[Database] Connected to PostgreSQL');
+        try {
+          const migrationPath = path.resolve(process.cwd(), 'migrations', '001_create_lore_signals.sql');
+          const migrationSQL = await fs.readFile(migrationPath, 'utf-8');
+          await database.query(migrationSQL);
           console.log('[Database] Migrations applied');
+        } catch (err: unknown) {
+          const e = err as { code?: string; message?: string };
+          if (e.code === 'ENOENT') console.log('[Database] Migration file not found (skipping)');
+          else if (e.message?.includes('already exists') || e.message?.includes('duplicate')) console.log('[Database] Tables already exist');
+          else console.error('[Database] Migration error:', e.message || err);
         }
-      } catch (err: unknown) {
-        const errObj = err as { code?: string; message?: string };
-        if (errObj.code === 'ENOENT') {
-          // Migration file doesn't exist - that's okay, might be running from a different directory
-          console.log('[Database] Migration file not found (skipping)');
-        } else if (errObj.message?.includes('already exists') || errObj.message?.includes('duplicate')) {
-          // Table already exists - that's fine, migration was already run
-          console.log('[Database] Tables already exist (migration already applied)');
-        } else {
-          console.error('[Database] Migration error:', errObj.message || err);
-          // Don't fail startup if migrations fail - database might already have tables or be in a different state
-        }
+      } else {
+        console.log('[Database] PostgreSQL not configured or unavailable. Database features disabled.');
       }
-    } else {
-      console.log('[Database] PostgreSQL not configured or unavailable. Database features disabled.');
+    } catch (err) {
+      console.error('[Database] Initialization error:', err);
     }
-  } catch (err) {
-    console.error('[Database] Initialization error:', err);
-    // Continue without database - app should still work
-    dbAvailable = false;
-  }
+  })();
 
   const strategyRegistry = new StrategyRegistry();
   const feeEngine = new FeeEngine(config.trading);
@@ -315,9 +303,9 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   if (!botManager.getDefaultService()) await snipeService.init();
 
   // Chart capture: screenshots DexScreener TradingView charts on buy/sell/auto-exit.
-  // Builds a visual library of chart patterns for future pattern recognition.
+  // Init in background so server can listen quickly and pass health checks.
   const chartCaptureService = new ChartCaptureService(config);
-  await chartCaptureService.init();
+  void chartCaptureService.init().catch((err) => console.error('[ChartCapture] Init error:', err));
 
   const x402Policy = await loadX402Policy(config.payments.x402PolicyFile, config.payments.x402RequiredPaths);
   app.addHook('preHandler', x402PaymentGate(config.payments, stateStore, x402Policy));
