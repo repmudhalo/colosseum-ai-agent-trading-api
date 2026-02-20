@@ -42,24 +42,32 @@ export function renderExperimentPage(): string {
             <label>Wallet Private Key (Base58)</label>
             <input type="password" id="ab-key" placeholder="Base58 encoded private key" required style="font-family:var(--mono);font-size:.75rem"/>
           </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Take Profit %</label>
-              <input type="number" id="ab-tp" placeholder="30" step="1" min="1"/>
-            </div>
-            <div class="form-group">
-              <label>Stop Loss %</label>
-              <input type="number" id="ab-sl" placeholder="15" step="1" min="1"/>
-            </div>
+          <div class="form-group">
+            <label>Strategy Preset</label>
+            <select id="ab-preset" onchange="loadBotPreset()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:.82rem;font-family:var(--sans);width:100%;cursor:pointer">
+              <option value="">Custom (manual)</option>
+            </select>
           </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Trailing Stop %</label>
-              <input type="number" id="ab-trail" placeholder="20" step="1" min="1"/>
+          <div id="ab-strategy-fields">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Take Profit %</label>
+                <input type="number" id="ab-tp" placeholder="30" step="1" min="1"/>
+              </div>
+              <div class="form-group">
+                <label>Stop Loss %</label>
+                <input type="number" id="ab-sl" placeholder="15" step="1" min="1"/>
+              </div>
             </div>
-            <div class="form-group">
-              <label>Moon Bag %</label>
-              <input type="number" id="ab-moon" placeholder="20" step="1" min="0" max="90"/>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Trailing Stop %</label>
+                <input type="number" id="ab-trail" placeholder="20" step="1" min="1"/>
+              </div>
+              <div class="form-group">
+                <label>Moon Bag %</label>
+                <input type="number" id="ab-moon" placeholder="20" step="1" min="0" max="90"/>
+              </div>
             </div>
           </div>
           <div id="ab-msg" class="msg" style="margin-bottom:1rem"></div>
@@ -127,8 +135,26 @@ var currentBot='';
 function botParam(){return currentBot?'?bot='+encodeURIComponent(currentBot):'';}
 function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
 
-function openAddBot(){$('#add-bot-modal').style.display='flex';$('#ab-id').focus();}
-function closeAddBot(){$('#add-bot-modal').style.display='none';$('#add-bot-form').reset();$('#ab-msg').style.display='none';}
+var abPresets=[];
+async function openAddBot(){
+  $('#add-bot-modal').style.display='flex';$('#ab-id').focus();
+  var res=await api('/strategy-presets');
+  if(res&&res.presets){abPresets=res.presets;var sel=$('#ab-preset');sel.innerHTML='<option value="">Custom (manual)</option>'+abPresets.map(function(p){return '<option value="'+p.id+'">'+p.name+'</option>';}).join('');}
+}
+function loadBotPreset(){
+  var id=$('#ab-preset').value;
+  var fields=$('#ab-strategy-fields');
+  if(!id){fields.style.opacity='1';fields.style.pointerEvents='auto';$('#ab-tp').value='';$('#ab-sl').value='';$('#ab-trail').value='';$('#ab-moon').value='';return;}
+  var p=abPresets.find(function(x){return x.id===id;});
+  if(!p)return;
+  var s=p.strategy||{};
+  $('#ab-tp').value=s.takeProfitPct!=null?s.takeProfitPct:'';
+  $('#ab-sl').value=s.stopLossPct!=null?s.stopLossPct:'';
+  $('#ab-trail').value=s.trailingStopPct!=null?s.trailingStopPct:'';
+  $('#ab-moon').value=s.moonBagPct!=null?s.moonBagPct:'';
+  fields.style.opacity='.5';fields.style.pointerEvents='none';
+}
+function closeAddBot(){$('#add-bot-modal').style.display='none';$('#add-bot-form').reset();$('#ab-msg').style.display='none';$('#ab-strategy-fields').style.opacity='1';$('#ab-strategy-fields').style.pointerEvents='auto';}
 async function submitAddBot(e){
   e.preventDefault();
   var msg=$('#ab-msg');msg.style.display='none';

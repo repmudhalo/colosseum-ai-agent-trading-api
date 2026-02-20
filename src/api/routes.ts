@@ -5645,6 +5645,60 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
+  // ─── Strategy Presets (saved / reusable strategies) ──────────────
+
+  /** List all saved strategy presets. */
+  app.get('/strategy-presets', async () => {
+    return { presets: deps.botManager.listPresets() };
+  });
+
+  /** Get a single preset. */
+  app.get('/strategy-presets/:presetId', async (request, reply) => {
+    const { presetId } = request.params as { presetId: string };
+    const preset = deps.botManager.getPreset(presetId);
+    if (!preset) return reply.code(404).send({ error: `Preset '${presetId}' not found.` });
+    return preset;
+  });
+
+  /** Create or update a strategy preset. */
+  app.post('/strategy-presets', async (request, reply) => {
+    const schema = z.object({
+      id: z.string().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
+      name: z.string().min(1).max(64),
+      description: z.string().max(200).optional(),
+      strategy: z.object({
+        takeProfitPct: z.number().positive().max(10000).optional(),
+        stopLossPct: z.number().positive().max(100).optional(),
+        trailingStopPct: z.number().positive().max(100).nullable().optional(),
+        moonBagPct: z.number().min(0).max(90).optional(),
+        reEntryEnabled: z.boolean().optional(),
+        reEntryDipPct: z.number().positive().max(100).optional(),
+        reEntryAmountSol: z.number().positive().max(10).optional(),
+        maxReEntries: z.number().int().min(0).max(100).optional(),
+      }),
+    });
+    const parse = schema.safeParse(request.body);
+    if (!parse.success) return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+
+    try {
+      const preset = await deps.botManager.savePreset(parse.data);
+      return reply.code(201).send(preset);
+    } catch (err) {
+      return reply.code(400).send({ error: String(err) });
+    }
+  });
+
+  /** Delete a strategy preset. */
+  app.delete('/strategy-presets/:presetId', async (request, reply) => {
+    const { presetId } = request.params as { presetId: string };
+    try {
+      await deps.botManager.deletePreset(presetId);
+      return { removed: true };
+    } catch (err) {
+      return reply.code(404).send({ error: String(err) });
+    }
+  });
+
   // ─── Snipe endpoints (direct trading by mint address) ─────────────
   // All snipe routes accept ?bot=<id> to target a specific bot.
   // If omitted, the default bot is used.

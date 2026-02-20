@@ -518,8 +518,10 @@ export class SnipeService {
     await this.reconcilePositionsWithWallet();
 
     const all = Array.from(this.positions.values()).map((p) => this.enrichPosition(p));
-    const open = all.filter((p) => p.status === 'open');
-    const closed = all.filter((p) => p.status === 'closed');
+    const byRecent = (a: SnipePosition, b: SnipePosition) =>
+      new Date(b.lastTradeAt).getTime() - new Date(a.lastTradeAt).getTime();
+    const open = all.filter((p) => p.status === 'open').sort(byRecent);
+    const closed = all.filter((p) => p.status === 'closed').sort(byRecent);
 
     let totalOpenValueUsd: number | null = 0;
     for (const p of open) {

@@ -52,6 +52,16 @@ export interface BotInfo {
   createdAt: string;
 }
 
+/** A saved strategy preset that can be reused across bots. */
+export interface StrategyPreset {
+  id: string;
+  name: string;
+  description?: string;
+  strategy: Partial<ExitStrategy>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Default bot ID for the original single-bot setup.
 export const DEFAULT_BOT_ID = 'default';
 
@@ -61,7 +71,9 @@ export class BotManager {
   private bots: Map<string, BotConfig> = new Map();
   private services: Map<string, SnipeService> = new Map();
   private bridges: Map<string, SnipeLearningBridge> = new Map();
+  private presets: Map<string, StrategyPreset> = new Map();
   private readonly configPath: string;
+  private readonly presetsPath: string;
 
   constructor(
     private readonly appConfig: AppConfig,
@@ -69,6 +81,7 @@ export class BotManager {
     private readonly learningService: AgentLearningService,
   ) {
     this.configPath = path.resolve(appConfig.paths.dataDir, 'bots.json');
+    this.presetsPath = path.resolve(appConfig.paths.dataDir, 'strategy-presets.json');
   }
 
   /**
@@ -77,6 +90,7 @@ export class BotManager {
    */
   async init(): Promise<void> {
     await this.loadConfigs();
+    await this.loadPresets();
 
     // If no bots configured, bootstrap the default bot from env vars.
     if (this.bots.size === 0 && this.appConfig.trading.solanaPrivateKeyB58) {
@@ -219,6 +233,44 @@ export class BotManager {
     return Array.from(this.bots.keys());
   }
 
+  // ─── Public: Strategy Presets ──────────────────────────────────────────
+
+  /** List all saved strategy presets. */
+  listPresets(): StrategyPreset[] {
+    return Array.from(this.presets.values()).sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+    );
+  }
+
+  /** Get a single preset by ID. */
+  getPreset(id: string): StrategyPreset | null {
+    return this.presets.get(id) ?? null;
+  }
+
+  /** Create or update a strategy preset. */
+  async savePreset(data: { id: string; name: string; description?: string; strategy: Partial<ExitStrategy> }): Promise<StrategyPreset> {
+    const existing = this.presets.get(data.id);
+    const now = new Date().toISOString();
+    const preset: StrategyPreset = {
+      id: data.id,
+      name: data.name.trim(),
+      description: data.description?.trim() || undefined,
+      strategy: data.strategy,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.presets.set(preset.id, preset);
+    await this.savePresets();
+    return preset;
+  }
+
+  /** Delete a strategy preset. */
+  async deletePreset(id: string): Promise<void> {
+    if (!this.presets.has(id)) throw new Error(`Preset '${id}' not found.`);
+    this.presets.delete(id);
+    await this.savePresets();
+  }
+
   // ─── Private: Bot lifecycle ────────────────────────────────────────────
 
   private async startBot(bot: BotConfig): Promise<void> {
@@ -305,5 +357,24 @@ export class BotManager {
     const dir = path.dirname(this.configPath);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(this.configPath, JSON.stringify(arr, null, 2), 'utf-8');
+  }
+
+  private async loadPresets(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.presetsPath, 'utf-8');
+      const arr = JSON.parse(raw) as StrategyPreset[];
+      for (const p of arr) {
+        this.presets.set(p.id, p);
+      }
+    } catch {
+      // No file yet — fresh install.
+    }
+  }
+
+  private async savePresets(): Promise<void> {
+    const arr = Array.from(this.presets.values());
+    const dir = path.dirname(this.presetsPath);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(this.presetsPath, JSON.stringify(arr, null, 2), 'utf-8');
   }
 }
