@@ -9,9 +9,7 @@ export function renderExperimentPage(): string {
     <div class="page-sub">Trading bot overview, live positions, and incoming LORE signals.</div>
 
     <div style="display:flex;align-items:center;gap:1rem;padding:1rem 1.25rem;background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;flex-wrap:wrap" id="wallet-bar">
-      <select id="bot-select" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);padding:6px 10px;border-radius:6px;font-size:.78rem;font-family:var(--sans);cursor:pointer;min-width:140px" onchange="switchBot()">
-        <option value="">Loading bots...</option>
-      </select>
+      <span id="wallet-bot-name" style="font-size:.78rem;font-weight:600;color:var(--accent);min-width:100px">--</span>
       <button class="btn btn-accent" onclick="openAddBot()" title="Add a new bot">
         <svg viewBox="0 0 24 24" style="width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2.5;vertical-align:-1px;margin-right:4px"><path d="M12 5v14M5 12h14"/></svg>Add Bot
       </button>
@@ -131,9 +129,8 @@ export function renderExperimentPage(): string {
       </div>
     </div>`,
     scripts: `
-var currentBot='';
-function botParam(){return currentBot?'?bot='+encodeURIComponent(currentBot):'';}
-function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+// Use sidebar/URL bot so switching bot in the sidebar reflects everywhere.
+function botApi(path){var bot=window.getDashboardBot();return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(bot));}
 
 var abPresets=[];
 async function openAddBot(){
@@ -172,8 +169,8 @@ async function submitAddBot(e){
     var data=await res.json();
     if(res.ok){
       msg.className='msg msg-ok';msg.textContent='Bot "'+data.name+'" created.';msg.style.display='block';
-      await loadBots();currentBot=body.id;$('#bot-select').value=currentBot;
-      setTimeout(function(){closeAddBot();loadAll();},1200);
+      window.setDashboardBot(body.id);
+      setTimeout(function(){closeAddBot();location.href='/dashboard?bot='+encodeURIComponent(body.id);},1200);
     }else{
       msg.className='msg msg-err';msg.textContent=data.error||'Failed to create bot.';msg.style.display='block';
     }
@@ -187,19 +184,10 @@ function solPnl(v){if(v==null)return'--';return (v>=0?'+':'')+v.toFixed(4);}
 function solPnlClass(v){if(v==null)return'pnl-zero';return v>0.0001?'pnl-pos':v<-0.0001?'pnl-neg':'pnl-zero';}
 function setPnlStat(id,val){var el=$(id);if(val==null){el.textContent='--';el.style.color='#fff';return;}el.textContent=(val>=0?'+':'')+val.toFixed(4);el.style.color=val>0.0001?'var(--green)':val<-0.0001?'var(--red)':'#fff';}
 
-async function loadBots(){
-  var res=await api('/bots');
-  if(!res||!res.bots)return;
-  var sel=$('#bot-select');
-  sel.innerHTML=res.bots.map(function(b){
-    var label=b.name+(b.ready?'':' (offline)');
-    return '<option value="'+b.id+'"'+(b.id===currentBot?' selected':'')+'>'+label+'</option>';
-  }).join('');
-  if(!currentBot&&res.bots.length>0){currentBot=res.bots[0].id;}
-}
-function switchBot(){currentBot=$('#bot-select').value;loadAll();}
-
 async function loadAll(){
+  var bot=window.getDashboardBot();
+  var sel=document.getElementById('dashboard-bot-select');
+  if(sel&&sel.selectedOptions&&sel.selectedOptions.length){$('#wallet-bot-name').textContent=sel.selectedOptions[0].text||bot||'--';}else{$('#wallet-bot-name').textContent=bot||'Select bot';}
   var [w,p,st]=await Promise.all([botApi('/snipe/wallet'),botApi('/snipe/portfolio'),api('/lore/status')]);
 
   // Wallet bar
@@ -215,7 +203,8 @@ async function loadAll(){
   // LORE config
   var el=$('#lore-config');if(!st){el.innerHTML='<div style="color:var(--muted)">Unavailable</div>';}else{el.innerHTML='<div class="kv"><span class="k">Webhook</span><span class="v" style="color:'+(st.webhookConfigured?'var(--green)':'var(--red)')+'">'+(st.webhookConfigured?'Connected':'Not set')+'</span></div><div class="kv"><span class="k">Auto-trade</span><span class="v" style="color:'+(st.autoTradeEnabled?'var(--green)':'var(--muted)')+'">'+(st.autoTradeEnabled?'Enabled':'Disabled')+'</span></div><div class="kv"><span class="k">Box types</span><span class="v">'+(st.autoTradeBoxTypes&&st.autoTradeBoxTypes.length?st.autoTradeBoxTypes.join(', '):'--')+'</span></div><div class="kv"><span class="k">Amount/trade</span><span class="v">'+(st.autoTradeAmountSol||0)+' SOL</span></div>';}
 }
-loadBots().then(loadAll);setInterval(loadAll,10000);setInterval(loadBots,30000);
+loadAll();setInterval(loadAll,10000);
+window.addEventListener('dashboard-bot-changed',loadAll);
 (function(){const proto=location.protocol==='https:'?'wss:':'ws:';let n=0;const cls={'token_featured':'event-featured','token_moved':'event-moved','token_reentry':'event-reentry','token_removed':'event-removed','candidates_updated':'event-candidates'};function go(){let ws;try{ws=new WebSocket(proto+'//'+location.host+'/ws');}catch{return;}ws.onmessage=function(e){try{const m=JSON.parse(e.data);if(m.type!=='lore.signal')return;n++;const f=$('#lore-feed');if(n===1)f.innerHTML='';const d=m.data||{};const ev=d.event||'?';const tok=(d.data&&d.data.token)?(d.data.token.symbol||shortMint(d.data.token.address)):'?';const box=(d.data&&d.data.boxType)?d.data.boxType:'';const c=cls[ev]||'event-unknown';const t=m.ts?new Date(m.ts).toLocaleTimeString():'';const el=document.createElement('div');el.style.cssText='display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.03);font-size:.78rem';el.innerHTML='<span style="font-family:var(--mono);font-size:.68rem;color:var(--muted);white-space:nowrap;min-width:62px">'+t+'</span><span class="'+c+'" style="font-weight:600;min-width:110px">'+ev+'</span><span style="color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+tok+(box?' &middot; '+box:'')+'</span>';f.insertBefore(el,f.firstChild);while(f.children.length>30)f.removeChild(f.lastChild);$('#lore-count').textContent='('+n+')';}catch{}};ws.onclose=function(){setTimeout(go,3000);};ws.onerror=function(){ws.close();};}go();})();
 `,
   });

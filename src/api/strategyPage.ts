@@ -147,9 +147,8 @@ export function renderStrategyPage(): string {
     scripts: `
 let strat = null;
 let presets = [];
-function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
-var currentBot=getBot();
-function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+function getBot(){return window.getDashboardBot?window.getDashboardBot():'';}
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(getBot()));}
 
 function kvRow(label, val) {
   return '<div class="kv"><span class="k">' + label + '</span><span class="v">' + val + '</span></div>';
@@ -232,7 +231,7 @@ async function save(e) {
   var body = getFormStrategy();
   if (!Object.keys(body).length) return;
 
-  var res = await fetch(BASE + '/snipe/strategy' + (currentBot ? '?bot=' + encodeURIComponent(currentBot) : ''), {
+  var res = await fetch(BASE + '/snipe/strategy' + (getBot() ? '?bot=' + encodeURIComponent(getBot()) : ''), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -380,6 +379,7 @@ async function submitSavePreset(e) {
 }
 
 load();
+window.addEventListener('dashboard-bot-changed', load);
 `,
   });
 }

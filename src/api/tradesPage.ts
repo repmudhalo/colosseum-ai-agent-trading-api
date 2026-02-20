@@ -95,9 +95,8 @@ function renderTable() {
 function prev() { if (page > 0) { page--; renderTable(); } }
 function next() { if ((page + 1) * PAGE_SIZE < allTrades.length) { page++; renderTable(); } }
 
-function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
-var currentBot=getBot();
-function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+function getBot(){return window.getDashboardBot?window.getDashboardBot():'';}
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(getBot()));}
 
 async function load() {
   const mint = ($('#filter-mint').value || '').trim() || undefined;
@@ -112,6 +111,7 @@ async function load() {
 $('#filter-mint').addEventListener('keydown', function(e) { if (e.key === 'Enter') load(); });
 load();
 setInterval(load, 15000);
+window.addEventListener('dashboard-bot-changed', load);
 `,
   });
 }

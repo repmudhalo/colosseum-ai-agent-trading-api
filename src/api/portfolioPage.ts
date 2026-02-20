@@ -145,9 +145,8 @@ function render() {
   }
 }
 
-function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
-var currentBot=getBot();
-function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+function getBot(){return window.getDashboardBot?window.getDashboardBot():'';}
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(getBot()));}
 
 async function load() {
   portfolio = await botApi('/snipe/portfolio');
@@ -166,6 +165,7 @@ async function load() {
 }
 load();
 setInterval(load, 12000);
+window.addEventListener('dashboard-bot-changed', load);
 `,
   });
 }

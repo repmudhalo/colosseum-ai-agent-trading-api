@@ -21,10 +21,13 @@ export function dashboardShell(opts: {
     { id: 'health', href: '/health', label: 'Health', icon: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>', external: true },
   ];
 
+  // Internal nav: preserve ?bot= when navigating so the selected bot is kept across pages.
   const renderNav = (items: typeof navItems) => items.map((n) => {
     const active = n.id === opts.activeNav ? ' active' : '';
     const ext = (n as { external?: boolean }).external;
-    const click = ext ? ` onclick="window.open('${n.href}','_blank')"` : ` onclick="location.href='${n.href}'"`;
+    const click = ext
+      ? ` onclick="window.open('${n.href}','_blank')"`
+      : ` data-href="${n.href}" onclick="var h=this.getAttribute('data-href');var b=window.getDashboardBot();if(b) h+=(h.indexOf('?')>=0?'&':'?')+'bot='+encodeURIComponent(b);location.href=h"`;
     return `<div class="nav-item${active}"${click}><svg viewBox="0 0 24 24">${n.icon}</svg>${n.label}</div>`;
   }).join('');
 
@@ -125,10 +128,14 @@ label{font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px}
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="logo" onclick="location.href='/dashboard'">
+    <div class="logo" id="logo-dashboard" data-href="/dashboard" style="cursor:pointer">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5" stroke="#0a0a0f" stroke-width="2.5" fill="none"/></svg>
       Sesame
     </div>
+    <div class="nav-label">Bot</div>
+    <select id="dashboard-bot-select" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);padding:6px 10px;border-radius:6px;font-size:.78rem;font-family:var(--sans);cursor:pointer;width:100%;margin-bottom:.5rem">
+      <option value="">Loading...</option>
+    </select>
     <nav class="nav">${renderNav(navItems)}</nav>
     <div class="nav-label">Integrations</div>
     <nav class="nav">${renderNav(integrationItems)}</nav>
@@ -150,6 +157,27 @@ function solStr(v){return v!=null?parseFloat(v).toFixed(4):'--';}
 function usdStr(v){return v!=null?'$'+parseFloat(v).toFixed(6):'--';}
 function pnlClass(v){return v>0?'pnl-pos':v<0?'pnl-neg':'pnl-zero';}
 function pnlStr(v){return (v>0?'+':'')+v.toFixed(2)+'%';}
+
+// Selected bot: URL wins, then sessionStorage. Used by all dashboard pages so switching bot reflects everywhere.
+window.getDashboardBot=function(){var p=new URLSearchParams(location.search);var b=p.get('bot');if(b)return b;try{return sessionStorage.getItem('dashboardBot')||'';}catch(e){return '';}};
+window.setDashboardBot=function(id){try{if(id)sessionStorage.setItem('dashboardBot',id);else sessionStorage.removeItem('dashboardBot');}catch(e){}var u=new URL(location.href);if(id)u.searchParams.set('bot',id);else u.searchParams.delete('bot');history.replaceState({},'',u.pathname+u.search);window.dispatchEvent(new CustomEvent('dashboard-bot-changed',{detail:id}));};
+
+(function initDashboardBot(){
+  var sel=document.getElementById('dashboard-bot-select');
+  var logo=document.getElementById('logo-dashboard');
+  if(logo){logo.onclick=function(){var h=this.getAttribute('data-href');var b=window.getDashboardBot();if(b)h+=(h.indexOf('?')>=0?'&':'?')+'bot='+encodeURIComponent(b);location.href=h;};}
+  if(!sel)return;
+  api('/bots').then(function(res){
+    if(!res||!res.bots||!res.bots.length){sel.innerHTML='<option value="">No bots</option>';return;}
+    var fromUrl=new URLSearchParams(location.search).get('bot');
+    var fromStorage='';try{fromStorage=sessionStorage.getItem('dashboardBot')||'';}catch(e){}
+    var current=fromUrl||fromStorage||res.bots[0].id;
+    if(current&&!fromUrl){var u=new URL(location.href);u.searchParams.set('bot',current);history.replaceState({},'',u.pathname+u.search);}
+    sel.innerHTML=res.bots.map(function(b){var label=b.name+(b.ready?'':' (offline)');return '<option value="'+b.id+'"'+(b.id===current?' selected':'')+'>'+label+'</option>';}).join('');
+    sel.onchange=function(){window.setDashboardBot(sel.value);};
+  }).catch(function(){sel.innerHTML='<option value="">Error</option>';});
+})();
+
 (async function(){const h=await api('/health');if(h&&h.uptimeSeconds!=null){const s=h.uptimeSeconds;const el=$('#sidebar-uptime');if(s<60)el.textContent=s+'s';else if(s<3600)el.textContent=Math.floor(s/60)+'m';else if(s<86400)el.textContent=Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';else el.textContent=Math.floor(s/86400)+'d '+Math.floor(s%86400/3600)+'h';}})();
 ${opts.scripts}
 </script>
