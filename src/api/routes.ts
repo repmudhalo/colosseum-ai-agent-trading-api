@@ -295,6 +295,28 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     mode: deps.config.trading.defaultMode,
   }));
 
+  // Health check must be registered early so load balancers get 200 before any parametric routes.
+  app.get('/health', async () => {
+    const state = deps.store.snapshot();
+    const runtime = deps.getRuntimeMetrics();
+    return {
+      status: 'ok',
+      env: deps.config.app.env,
+      uptimeSeconds: runtime.uptimeSeconds,
+      pendingIntents: runtime.pendingIntents,
+      processPid: runtime.processPid,
+      defaultMode: deps.config.trading.defaultMode,
+      liveModeEnabled: deps.config.trading.liveEnabled,
+      wsClients: connectedClients(),
+      stateSummary: {
+        agents: Object.keys(state.agents).length,
+        intents: Object.keys(state.tradeIntents).length,
+        executions: Object.keys(state.executions).length,
+        receipts: Object.keys(state.executionReceipts).length,
+      },
+    };
+  });
+
   app.get('/experiment', async (_request, reply) => reply.redirect('/dashboard'));
 
   app.get('/dashboard', async (_request, reply) => reply
@@ -706,28 +728,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     } catch {
       return reply.code(404).send('SKILL.md not found');
     }
-  });
-
-  app.get('/health', async () => {
-    const state = deps.store.snapshot();
-    const runtime = deps.getRuntimeMetrics();
-
-    return {
-      status: 'ok',
-      env: deps.config.app.env,
-      uptimeSeconds: runtime.uptimeSeconds,
-      pendingIntents: runtime.pendingIntents,
-      processPid: runtime.processPid,
-      defaultMode: deps.config.trading.defaultMode,
-      liveModeEnabled: deps.config.trading.liveEnabled,
-      wsClients: connectedClients(),
-      stateSummary: {
-        agents: Object.keys(state.agents).length,
-        intents: Object.keys(state.tradeIntents).length,
-        executions: Object.keys(state.executions).length,
-        receipts: Object.keys(state.executionReceipts).length,
-      },
-    };
   });
 
   app.get('/metrics', async () => {
