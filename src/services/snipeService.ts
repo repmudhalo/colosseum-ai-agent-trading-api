@@ -114,6 +114,8 @@ export interface SnipePosition {
   name?: string | null;
   /** Last known market cap from DexScreener. Null if unknown. */
   marketCapUsd?: number | null;
+  /** Unrealized P&L in SOL for open positions (currentValueSol - solSpent + solReceived). Null if price unknown. */
+  unrealizedPnlSol?: number | null;
 }
 
 export interface SnipeTrade {
@@ -167,6 +169,8 @@ export interface SnipePortfolio {
   totalSolSpent: number;
   totalSolReceived: number;
   totalRealizedPnlSol: number;
+  /** Sum of unrealized P&L (SOL) across open positions. Null if any price is unknown. */
+  totalUnrealizedPnlSol: number | null;
   totalOpenValueUsd: number | null;
   totalTrades: number;
   walletAddress: string | null;
@@ -402,12 +406,25 @@ export class SnipeService {
     if (this.getOpenMintAddresses().length > 0) this.startPriceMonitor();
     this.schedulePersist();
 
+    const meta = this.tokenMetadata.get(mintAddress);
     eventBus.emit('snipe.trade', {
+      tradeId: `import_${Date.now()}`,
       mintAddress,
+      symbol: meta?.symbol ?? null,
+      name: meta?.name ?? null,
       side: 'buy',
+      amountSol: options?.totalSolSpent ?? 0,
+      tokenAmount: balance.amount,
+      txSignature: null,
+      simulated: false,
+      tag: options?.tag ?? 'imported',
+      autoExitReason: null,
       entryPriceUsd: position.entryPriceUsd,
       currentPriceUsd: position.currentPriceUsd,
-      tag: options?.tag ?? 'imported',
+      realizedPnlSol: 0,
+      solPriceUsd: this.prices.get(SOL_MINT)?.priceUsd ?? null,
+      status: 'open',
+      timestamp: now,
     });
 
     return { success: true, position: this.enrichPosition(position), error: null };
@@ -504,6 +521,16 @@ export class SnipeService {
       totalOpenValueUsd += p.currentValueUsd;
     }
 
+    // Unrealized P&L across all open positions.
+    let totalUnrealizedPnlSol: number | null = 0;
+    for (const p of open) {
+      if (p.unrealizedPnlSol == null) { totalUnrealizedPnlSol = null; break; }
+      totalUnrealizedPnlSol += p.unrealizedPnlSol;
+    }
+    if (totalUnrealizedPnlSol !== null) {
+      totalUnrealizedPnlSol = Number(totalUnrealizedPnlSol.toFixed(6));
+    }
+
     // Build watched-for-reentry summary (include symbol/name for agent display).
     const watchedForReEntry = Array.from(this.watchedTokens.values()).map((w) => {
       const meta = this.tokenMetadata.get(w.mintAddress);
@@ -524,6 +551,7 @@ export class SnipeService {
       totalSolSpent: all.reduce((sum, p) => sum + p.totalSolSpent, 0),
       totalSolReceived: all.reduce((sum, p) => sum + p.totalSolReceived, 0),
       totalRealizedPnlSol: all.reduce((sum, p) => sum + p.realizedPnlSol, 0),
+      totalUnrealizedPnlSol,
       totalOpenValueUsd,
       totalTrades: this.trades.length,
       walletAddress: this.walletAddress() ?? null,
@@ -678,10 +706,11 @@ export class SnipeService {
     // Reconcile with wallet first: mark as closed any position the user sold manually.
     await this.reconcilePositionsWithWallet();
 
-    // Collect all mints we need prices for: open positions + watched re-entries.
+    // Collect all mints we need prices for: open positions + watched re-entries + SOL itself
+    // (SOL price is needed to convert USD values to SOL for unrealized P&L).
     const openMints = this.getOpenMintAddresses();
     const watchedMints = Array.from(this.watchedTokens.keys());
-    const allMints = [...new Set([...openMints, ...watchedMints])];
+    const allMints = [...new Set([SOL_MINT, ...openMints, ...watchedMints])];
 
     if (allMints.length === 0) { this.stopPriceMonitor(); return; }
 
@@ -747,10 +776,26 @@ export class SnipeService {
       let exitReason: string | null = null;
       let isTakeProfit = false;
 
-      // Take profit: price above entry by TP%.
-      if (changeFromEntry >= strategy.takeProfitPct) {
-        exitReason = `take_profit:+${changeFromEntry.toFixed(1)}%_(target:+${strategy.takeProfitPct}%)`;
+      // Dynamic take profit: instead of a hard threshold, use a range.
+      // The range is ±5 percentage points around the configured TP.
+      // - Below (TP - 5): no TP trigger.
+      // - Above (TP + 5): always trigger TP.
+      // - Within the range: trigger if price is falling from peak (momentum fading).
+      const tpTarget = strategy.takeProfitPct;
+      const tpFloor = tpTarget - 5;
+      const tpCeiling = tpTarget + 5;
+
+      if (changeFromEntry >= tpCeiling) {
+        // Above ceiling — always take profit.
+        exitReason = `take_profit:+${changeFromEntry.toFixed(1)}%_(ceiling:+${tpCeiling}%)`;
         isTakeProfit = true;
+      } else if (changeFromEntry >= tpFloor && changeFromEntry < tpCeiling) {
+        // Within the dynamic range — take profit if momentum is fading (price dropped from peak).
+        const dropFromPeak = peakPrice > 0 ? ((peakPrice - currentPrice) / peakPrice) * 100 : 0;
+        if (dropFromPeak >= 2) {
+          exitReason = `take_profit_range:+${changeFromEntry.toFixed(1)}%_(range:${tpFloor}-${tpCeiling}%,drop_from_peak:${dropFromPeak.toFixed(1)}%)`;
+          isTakeProfit = true;
+        }
       }
 
       // Stop loss: price below entry by SL%. (Overrides TP if both somehow trigger.)
@@ -1129,6 +1174,13 @@ export class SnipeService {
       if (position.peakPriceUsd !== null && position.peakPriceUsd > 0) {
         enriched.changeFromPeakPct = Number((((price.priceUsd - position.peakPriceUsd) / position.peakPriceUsd) * 100).toFixed(2));
       }
+
+      // Unrealized P&L in SOL: convert current token value to SOL equivalent.
+      const solPrice = this.prices.get(SOL_MINT)?.priceUsd;
+      if (solPrice && solPrice > 0) {
+        const currentValueSol = (tokenCount * price.priceUsd) / solPrice;
+        enriched.unrealizedPnlSol = Number((currentValueSol - position.totalSolSpent + position.totalSolReceived).toFixed(6));
+      }
     }
 
     return enriched;
@@ -1232,11 +1284,19 @@ export class SnipeService {
 
   // ─── Private: Event Emission ──────────────────────────────────────────
 
+  /** Current SOL/USD price from the DexScreener cache. Null if not yet fetched. */
+  getSolPriceUsd(): number | null {
+    return this.prices.get(SOL_MINT)?.priceUsd ?? null;
+  }
+
   /** Emit a snipe trade event for other services to consume. */
   private emitTradeEvent(trade: SnipeTrade, position: SnipePosition): void {
+    const meta = this.tokenMetadata.get(trade.mintAddress);
     eventBus.emit('snipe.trade', {
       tradeId: trade.id,
       mintAddress: trade.mintAddress,
+      symbol: meta?.symbol ?? null,
+      name: meta?.name ?? null,
       side: trade.side,
       amountSol: trade.amountSol,
       tokenAmount: trade.tokenAmount,
@@ -1247,6 +1307,7 @@ export class SnipeService {
       entryPriceUsd: position.entryPriceUsd,
       currentPriceUsd: position.currentPriceUsd,
       realizedPnlSol: position.realizedPnlSol,
+      solPriceUsd: this.prices.get(SOL_MINT)?.priceUsd ?? null,
       status: position.status,
       timestamp: trade.timestamp,
     });

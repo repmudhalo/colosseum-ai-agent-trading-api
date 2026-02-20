@@ -83,7 +83,7 @@ export function renderStrategyPage(): string {
         </div>
       </div>
       <div class="kv-list">
-        <div class="kv"><span class="k">Take profit</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Sell when price rises TP% above entry. Moon bag % is kept.</span></div>
+        <div class="kv"><span class="k">Take profit</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Dynamic range: TP-5% to TP+5%. Early exit within range if momentum fades.</span></div>
         <div class="kv"><span class="k">Stop loss</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Full sell when price drops SL% below entry.</span></div>
         <div class="kv"><span class="k">Trailing stop</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Full sell when price drops trail% from its peak.</span></div>
         <div class="kv"><span class="k">Moon bag</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">% of tokens kept after TP. Rides with trailing stop only.</span></div>
@@ -105,7 +105,7 @@ async function load() {
   const el = $('#strategy-view');
   const minMcap = res.minMarketCapUsd || 5000;
   el.innerHTML =
-    kvRow('Take profit', strat.takeProfitPct + '%') +
+    kvRow('Take profit', strat.takeProfitPct + '% (range: ' + (strat.takeProfitPct - 5) + '-' + (strat.takeProfitPct + 5) + '%)') +
     kvRow('Stop loss', strat.stopLossPct + '%') +
     kvRow('Trailing stop', strat.trailingStopPct != null ? strat.trailingStopPct + '%' : 'Off') +
     kvRow('Moon bag', strat.moonBagPct + '%') +

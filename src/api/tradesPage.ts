@@ -59,7 +59,8 @@ function renderTable() {
   } else {
     body.innerHTML = slice.map(function(t) {
       const sym = t.symbol || shortMint(t.mintAddress);
-      const side = t.side === 'buy'
+      const isBuy = t.side === 'buy';
+      const side = isBuy
         ? '<span class="badge badge-buy">Buy</span>'
         : '<span class="badge badge-sell">Sell</span>';
       const tag = t.autoExitReason
@@ -70,11 +71,15 @@ function renderTable() {
         : '<span style="font-size:.72rem;color:var(--muted)">simulated</span>';
       const time = t.timestamp ? new Date(t.timestamp).toLocaleString() : '--';
       const tokens = t.tokenAmount ? parseFloat(t.tokenAmount).toLocaleString() : '--';
+      const sol = t.amountSol != null ? parseFloat(t.amountSol) : 0;
+      const solDisplay = isBuy
+        ? '<span style="color:var(--red)">-' + sol.toFixed(4) + '</span>'
+        : '<span style="color:var(--green)">+' + sol.toFixed(4) + '</span>';
       return '<tr>' +
         '<td style="font-family:var(--mono);font-size:.72rem;color:var(--muted);white-space:nowrap">' + time + '</td>' +
         '<td><div class="token-name">' + sym + '</div><div class="token-mint">' + shortMint(t.mintAddress) + '</div></td>' +
         '<td>' + side + '</td>' +
-        '<td style="font-family:var(--mono)">' + solStr(t.amountSol) + '</td>' +
+        '<td style="font-family:var(--mono)">' + solDisplay + '</td>' +
         '<td style="font-family:var(--mono);font-size:.72rem">' + tokens + '</td>' +
         '<td>' + tag + '</td>' +
         '<td>' + tx + '</td></tr>';

@@ -101,17 +101,22 @@ export class SnipeLearningBridge {
   private async writeExecutionRecord(event: SnipeTradeEvent): Promise<void> {
     const executionId = `snipe_${event.tradeId}`;
 
-    // Estimate USD values from the trade.
-    // For buys: grossNotional ≈ amountSol * SOL price.
-    // For sells: we use the realized P&L.
-    const solPriceUsd = 200; // Rough estimate; could read from DexScreener later.
+    // Use the live SOL/USD price from the snipe service's DexScreener cache.
+    // Falls back to the price emitted with the event, then to a rough estimate.
+    const solPriceUsd = event.solPriceUsd
+      ?? this.snipeService.getSolPriceUsd()
+      ?? 200;
     const grossNotionalUsd = event.amountSol * solPriceUsd;
+
+    // Use real DexScreener symbol when available; fall back to shortened mint.
+    const symbol = event.symbol
+      ?? event.mintAddress.slice(0, 8).toUpperCase();
 
     const record: ExecutionRecord = {
       id: executionId,
       intentId: `snipe_intent_${event.tradeId}`,
       agentId: SNIPE_AGENT_ID,
-      symbol: event.mintAddress.slice(0, 8).toUpperCase(), // Short symbol for display.
+      symbol,
       side: event.side,
       quantity: Number(event.tokenAmount) || 0,
       priceUsd: event.entryPriceUsd ?? event.currentPriceUsd ?? 0,
@@ -130,7 +135,6 @@ export class SnipeLearningBridge {
       state.executions[executionId] = record;
 
       // Also update price history for the token symbol.
-      const symbol = record.symbol;
       if (!state.marketPriceHistoryUsd[symbol]) {
         state.marketPriceHistoryUsd[symbol] = [];
       }
@@ -263,6 +267,10 @@ export class SnipeLearningBridge {
 interface SnipeTradeEvent {
   tradeId: string;
   mintAddress: string;
+  /** DexScreener ticker (e.g. BONK). Null if not yet resolved. */
+  symbol: string | null;
+  /** Full token name from DexScreener. Null if not yet resolved. */
+  name: string | null;
   side: 'buy' | 'sell';
   amountSol: number;
   tokenAmount: string;
@@ -273,6 +281,8 @@ interface SnipeTradeEvent {
   entryPriceUsd: number | null;
   currentPriceUsd: number | null;
   realizedPnlSol: number;
+  /** Live SOL/USD price at the time of the trade. Null if unavailable. */
+  solPriceUsd: number | null;
   status: string;
   timestamp: string;
 }

@@ -5867,9 +5867,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // LORE — Status (for dashboard) + Webhook
   // ─────────────────────────────────────────────────────────
 
-  // Tracks the last box type we traded on per mint.
-  // Only buy again if the token moved to a DIFFERENT box (e.g. Gamble → Fastest).
+  // Tracks the last box type we saw per mint.
+  // Used to detect upgrades (Gamble→Fastest) vs downgrades (Fastest→Gamble).
   const loreLastBoxPerMint = new Map<string, string>();
+
+  // Box tier ranking: higher number = higher tier.
+  const BOX_TIER: Record<string, number> = { Gamble: 1, Fastest: 2, Highest: 3 };
+  function boxTier(box: string): number { return BOX_TIER[box] ?? 0; }
 
   /**
    * GET /lore/status — LORE integration status for the control dashboard.
@@ -5951,9 +5955,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       data,
     });
 
-    // Auto-trade when a token is featured/moved/reentry in allowed box types.
-    // Only buy if the token moved to a DIFFERENT box than the last time we traded it.
-    // e.g. Gamble → buy, then Fastest → buy again, but Fastest → Fastest → skip.
+    // ── LORE signal strategy ──────────────────────────────────────────
+    // 1. Only buy if we do NOT already hold the token.
+    // 2. If already in a position and box changed:
+    //    - Upgrade (Gamble→Fastest): do nothing, let the position ride.
+    //    - Downgrade (Fastest→Gamble): tighten TP aggressively (halve remaining TP headroom).
+    //    - Same box: no action.
+    // 3. Mcap gate still applies.
     const loreConfig = deps.config.lore;
     const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
     const wouldTrade = tradeEvents.includes(event);
@@ -5973,7 +5981,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     } else if (wouldTrade && (!boxAllowed || !mintValid)) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, boxType, reason: 'box_type_not_allowed_or_invalid_mint' });
     } else if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady() && wouldTrade && boxAllowed && mintValid) {
-      // Block trade if LORE-reported market cap is below the configured minimum.
+      // Mcap gate.
       const minMcap = deps.config.snipe?.minMarketCapUsd ?? 5000;
       if (signalMcap !== undefined && signalMcap < minMcap) {
         await deps.logger.log('info', 'lore.autotrade.skipped', {
@@ -5982,30 +5990,82 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         });
         return reply.code(200).send({ received: true, event });
       }
+
       const previousBox = loreLastBoxPerMint.get(mint!);
-      if (previousBox === boxType) {
-        await deps.logger.log('info', 'lore.autotrade.skipped', {
-          event, symbol, mint, boxType,
-          reason: 'same_box_as_last_trade',
-          previousBox,
-        });
+      loreLastBoxPerMint.set(mint!, boxType!);
+      const existingPosition = deps.snipeService.getPosition(mint!);
+      const alreadyHolding = existingPosition && existingPosition.status === 'open';
+
+      if (alreadyHolding) {
+        // We already have a position — do NOT buy more.
+        // Adjust strategy based on box transition direction.
+        if (previousBox && previousBox !== boxType) {
+          const prevTier = boxTier(previousBox);
+          const newTier = boxTier(boxType!);
+          const currentTP = existingPosition.exitStrategy.takeProfitPct;
+          const currentChange = existingPosition.changePct ?? 0;
+          const headroom = Math.max(currentTP - currentChange, 0);
+
+          if (newTier < prevTier) {
+            // Downgrade (e.g. Fastest→Gamble). Momentum fading — aggressive tighten.
+            // Cut 50% of remaining headroom so we exit soon.
+            const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.5, 5), 5);
+            const newTP = Number(tightenedTP.toFixed(1));
+
+            deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
+            await deps.logger.log('info', 'lore.strategy.tightened', {
+              event, symbol, mint, boxType,
+              previousBox, previousTP: currentTP, newTP,
+              currentChangePct: currentChange,
+              reason: 'box_downgrade',
+            });
+          } else {
+            // Upgrade (e.g. Gamble→Fastest). Volume surging — price likely going up.
+            // Start preparing to exit: moderate tighten, shave 25% of headroom.
+            // Still leaves room to ride the surge.
+            const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.75, 5), 5);
+            const newTP = Number(tightenedTP.toFixed(1));
+
+            deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
+            await deps.logger.log('info', 'lore.strategy.tightened', {
+              event, symbol, mint, boxType,
+              previousBox, previousTP: currentTP, newTP,
+              currentChangePct: currentChange,
+              reason: 'box_upgrade_prepare_exit',
+            });
+          }
+        } else {
+          await deps.logger.log('info', 'lore.autotrade.skipped', {
+            event, symbol, mint, boxType,
+            reason: 'already_holding',
+            positionChangePct: existingPosition.changePct,
+          });
+        }
       } else {
-        loreLastBoxPerMint.set(mint!, boxType!);
-        const tag = `lore-${event}-${boxType}` + (previousBox ? `-from-${previousBox}` : '');
-        await deps.logger.log('info', 'lore.autotrade.triggered', {
-          event, symbol, mint, boxType,
-          previousBox: previousBox ?? null,
-          amountSol: loreConfig.autoTradeAmountSol,
-          tag,
-        });
-        deps.snipeService.snipe({
-          mintAddress: mint!,
-          side: 'buy',
-          amountSol: loreConfig.autoTradeAmountSol,
-          tag,
-        }).catch(async (err) => {
-          await deps.logger.log('warn', 'lore.autotrade.failed', { event, symbol, mint, error: String(err) });
-        });
+        // No existing position → open a new trade.
+        if (previousBox === boxType) {
+          await deps.logger.log('info', 'lore.autotrade.skipped', {
+            event, symbol, mint, boxType,
+            reason: 'same_box_no_position',
+            previousBox,
+          });
+        } else {
+          const tag = `lore-${event}-${boxType}` + (previousBox ? `-from-${previousBox}` : '');
+          await deps.logger.log('info', 'lore.autotrade.triggered', {
+            event, symbol, mint, boxType,
+            previousBox: previousBox ?? null,
+            amountSol: loreConfig.autoTradeAmountSol,
+            tag,
+          });
+          deps.snipeService.snipe({
+            mintAddress: mint!,
+            side: 'buy',
+            amountSol: loreConfig.autoTradeAmountSol,
+            tag,
+          }).catch(async (err) => {
+            await deps.logger.log('warn', 'lore.autotrade.failed', { event, symbol, mint, error: String(err) });
+          });
+        }
       }
     }
 

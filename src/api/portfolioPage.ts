@@ -23,8 +23,22 @@ export function renderPortfolioPage(): string {
         <div class="stat-label">Re-entry watch</div>
       </div>
       <div class="card">
-        <div class="card-title"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>P&L (SOL)</div>
-        <div class="stat-big" id="s-pnl">--</div>
+        <div class="card-title"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Unrealized P&L</div>
+        <div class="stat-big" id="s-upnl">--</div>
+        <div class="stat-label">Open positions (SOL)</div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="card">
+        <div class="card-title"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Realized P&L</div>
+        <div class="stat-big" id="s-rpnl">--</div>
+        <div class="stat-label">Closed positions (SOL)</div>
+      </div>
+      <div class="card">
+        <div class="card-title"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Total SOL flow</div>
+        <div class="stat-big" id="s-flow">--</div>
+        <div class="stat-label">Spent / Received</div>
       </div>
     </div>
 
@@ -54,6 +68,10 @@ function mcapStr(v) {
   if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
   return '$' + Math.round(v);
 }
+function solPnl(v){if(v==null)return'--';return (v>=0?'+':'')+v.toFixed(4);}
+function solPnlClass(v){if(v==null)return'pnl-zero';return v>0.0001?'pnl-pos':v<-0.0001?'pnl-neg':'pnl-zero';}
+function setPnlStat(id,val){var el=$(id);if(val==null){el.textContent='--';el.style.color='#fff';return;}el.textContent=(val>=0?'+':'')+val.toFixed(4);el.style.color=val>0.0001?'var(--green)':val<-0.0001?'var(--red)':'#fff';}
+
 let portfolio = null;
 let currentTab = 'open';
 
@@ -73,11 +91,12 @@ function render() {
     t.innerHTML = '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Open positions';
     const rows = portfolio.openPositions || [];
     if (!rows.length) { c.innerHTML = '<div class="empty-state">No open positions</div>'; return; }
-    c.innerHTML = '<table><thead><tr><th>Token</th><th>MCap</th><th>SOL in</th><th>Entry</th><th>Current</th><th>P&L</th><th>From peak</th><th>Duration</th><th>Status</th></tr></thead><tbody>' +
+    c.innerHTML = '<table><thead><tr><th>Token</th><th>MCap</th><th>SOL in</th><th>Entry</th><th>Current</th><th>Change</th><th>P&L (SOL)</th><th>From peak</th><th>Duration</th><th>Status</th></tr></thead><tbody>' +
       rows.map(function(p) {
         const sym = p.symbol || shortMint(p.mintAddress);
         const change = p.changePct != null ? p.changePct : 0;
         const peak = p.changeFromPeakPct != null ? p.changeFromPeakPct : 0;
+        const uPnl = p.unrealizedPnlSol;
         const st = p.isMoonBag ? '<span class="badge badge-moon">Moon</span>' : '<span class="badge badge-open">Open</span>';
         const mcap = p.marketCapUsd != null ? mcapStr(p.marketCapUsd) : '--';
         return '<tr>' +
@@ -87,6 +106,7 @@ function render() {
           '<td style="font-family:var(--mono)">' + usdStr(p.entryPriceUsd) + '</td>' +
           '<td style="font-family:var(--mono)">' + usdStr(p.currentPriceUsd) + '</td>' +
           '<td><span class="' + pnlClass(change) + '">' + pnlStr(change) + '</span></td>' +
+          '<td><span class="' + solPnlClass(uPnl) + '">' + solPnl(uPnl) + '</span></td>' +
           '<td><span class="' + pnlClass(peak) + '">' + pnlStr(peak) + '</span></td>' +
           '<td style="font-family:var(--mono);color:var(--muted)">' + duration(p.firstTradeAt) + '</td>' +
           '<td>' + st + '</td></tr>';
@@ -99,12 +119,12 @@ function render() {
     c.innerHTML = '<table><thead><tr><th>Token</th><th>SOL in</th><th>SOL out</th><th>P&L (SOL)</th><th>Exit reason</th><th>Duration</th></tr></thead><tbody>' +
       rows.map(function(p) {
         const sym = p.symbol || shortMint(p.mintAddress);
-        const pnlSol = p.realizedPnlSol || 0;
+        const pnlVal = p.realizedPnlSol || 0;
         return '<tr>' +
           '<td><div class="token-name">' + sym + '</div><div class="token-mint">' + shortMint(p.mintAddress) + '</div></td>' +
           '<td style="font-family:var(--mono)">' + solStr(p.totalSolSpent) + '</td>' +
           '<td style="font-family:var(--mono)">' + solStr(p.totalSolReceived) + '</td>' +
-          '<td><span class="' + pnlClass(pnlSol) + '">' + (pnlSol >= 0 ? '+' : '') + pnlSol.toFixed(4) + '</span></td>' +
+          '<td><span class="' + solPnlClass(pnlVal) + '">' + solPnl(pnlVal) + '</span></td>' +
           '<td style="font-size:.72rem;color:var(--muted)">' + (p.autoExitReason || 'manual') + '</td>' +
           '<td style="font-family:var(--mono);color:var(--muted)">' + duration(p.firstTradeAt) + '</td></tr>';
       }).join('') + '</tbody></table>';
@@ -131,10 +151,12 @@ async function load() {
     $('#s-open').textContent = portfolio.openPositions ? portfolio.openPositions.length : 0;
     $('#s-closed').textContent = portfolio.closedPositions ? portfolio.closedPositions.length : 0;
     $('#s-watched').textContent = portfolio.watchedForReEntry ? portfolio.watchedForReEntry.length : 0;
-    const pnl = portfolio.totalRealizedPnlSol || 0;
-    const el = $('#s-pnl');
-    el.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(4);
-    el.style.color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : '#fff';
+    setPnlStat('#s-upnl', portfolio.totalUnrealizedPnlSol);
+    setPnlStat('#s-rpnl', portfolio.totalRealizedPnlSol);
+    var spent = portfolio.totalSolSpent || 0;
+    var received = portfolio.totalSolReceived || 0;
+    $('#s-flow').textContent = spent.toFixed(4) + ' / ' + received.toFixed(4);
+    $('#s-flow').style.color = '#fff';
   }
   render();
 }
