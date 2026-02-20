@@ -49,9 +49,10 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Copy built output, config, and SKILL.md (served via /skill endpoint)
+# Copy built output, config, migrations, and SKILL.md (served via /skill endpoint)
 COPY --from=builder /app/dist/ dist/
 COPY config/ config/
+COPY migrations/ migrations/
 COPY SKILL.md ./
 
 # Create data directories (charts subdir for screenshots)

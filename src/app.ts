@@ -295,12 +295,15 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
   // Bot manager: supports multiple snipe bots, each with their own wallet and strategy.
   // Loads bot configs from data/bots.json. Creates a default bot from env vars if none exist.
   // Each bot gets its own SnipeService, persistence file, and learning bridge.
+  // Init in background so server can listen quickly and pass health checks.
+  // Routes check isReady() before using any snipe service.
   const botManager = new BotManager(config, stateStore, agentLearningService);
-  await botManager.init();
+  void botManager.init().catch((err) => console.error('[BotManager] Init error:', err));
 
-  // For backward compatibility, expose the default bot's SnipeService directly.
-  const snipeService = botManager.getDefaultService() ?? new SnipeService(config);
-  if (!botManager.getDefaultService()) await snipeService.init();
+  // Fallback snipeService: un-initialized placeholder until botManager finishes.
+  // Once botManager.init() completes, resolveBot() returns botManager's services instead.
+  // Do NOT call init() here — botManager creates the real SnipeService for the default bot.
+  const snipeService = new SnipeService(config);
 
   // Chart capture: screenshots DexScreener TradingView charts on buy/sell/auto-exit.
   // Init in background so server can listen quickly and pass health checks.

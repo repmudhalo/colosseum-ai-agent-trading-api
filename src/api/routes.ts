@@ -6140,6 +6140,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     //    - Other transitions → use existing logic
     // 3. Only buy if we do NOT already hold the token.
     // 4. Mcap gate still applies.
+    // Use the multi-bot system: resolve bot from ?bot= query param (falls back to default bot).
+    const loreSvc = resolveBot(request);
     const loreConfig = deps.config.lore;
     const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
     const wouldTrade = tradeEvents.includes(event);
@@ -6149,11 +6151,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
     if (wouldTrade && !loreConfig?.autoTradeEnabled) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'auto_trade_disabled' });
-    } else if (wouldTrade && !deps.snipeService.isReady()) {
+    } else if (wouldTrade && !loreSvc.isReady()) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'snipe_not_ready' });
     } else if (wouldTrade && (!boxAllowed || !mintValid)) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, boxType, reason: 'box_type_not_allowed_or_invalid_mint' });
-    } else if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady() && wouldTrade && boxAllowed && mintValid) {
+    } else if (loreConfig?.autoTradeEnabled && loreSvc.isReady() && wouldTrade && boxAllowed && mintValid) {
       // Mcap gate.
       const minMcap = deps.config.snipe?.minMarketCapUsd ?? 5000;
       if (signalMcap !== undefined && signalMcap < minMcap) {
@@ -6189,7 +6191,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         });
       }
 
-      const existingPosition = deps.snipeService.getPosition(mint!);
+      const existingPosition = loreSvc.getPosition(mint!);
       const alreadyHolding = existingPosition && existingPosition.status === 'open';
 
       // ── Decision logic based on signal history ────────────────────────
@@ -6207,7 +6209,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
             // Downgrade (e.g. Fastest→Gamble). Momentum fading — aggressive tighten.
             const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.5, 5), 5);
             const newTP = Number(tightenedTP.toFixed(1));
-            deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
+            loreSvc.updatePositionStrategy(mint!, { takeProfitPct: newTP });
             await deps.logger.log('info', 'lore.strategy.tightened', {
               event, symbol, mint, boxType, previousBox, previousTP: currentTP, newTP,
               currentChangePct: currentChange, reason: 'box_downgrade',
@@ -6216,7 +6218,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
             // Upgrade (e.g. Gamble→Fastest). Volume surging — prepare to exit.
             const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.75, 5), 5);
             const newTP = Number(tightenedTP.toFixed(1));
-            deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
+            loreSvc.updatePositionStrategy(mint!, { takeProfitPct: newTP });
             await deps.logger.log('info', 'lore.strategy.tightened', {
               event, symbol, mint, boxType, previousBox, previousTP: currentTP, newTP,
               currentChangePct: currentChange, reason: 'box_upgrade_prepare_exit',
@@ -6263,7 +6265,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
             event, symbol, mint, boxType, previousBox: previousBox ?? null,
             amountSol: loreConfig.autoTradeAmountSol, tag, buyReason, isFirstSignal,
           });
-          deps.snipeService.snipe({
+          loreSvc.snipe({
             mintAddress: mint!,
             side: 'buy',
             amountSol: loreConfig.autoTradeAmountSol,
