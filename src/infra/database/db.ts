@@ -76,6 +76,21 @@ export class Database {
     }
   }
 
+  // Column alias fragment: maps snake_case DB columns to camelCase TypeScript fields.
+  // pg returns column names as-is, so we need aliases to match the LoreSignal interface.
+  private static readonly LORE_COLUMNS = `
+    id,
+    mint_address AS "mintAddress",
+    event,
+    box_type AS "boxType",
+    symbol,
+    name,
+    market_cap_usd AS "marketCapUsd",
+    price_usd AS "priceUsd",
+    received_at AS "receivedAt",
+    metadata
+  `;
+
   /**
    * Store a LORE signal in the database.
    */
@@ -94,7 +109,7 @@ export class Database {
     const result = await this.query<LoreSignal>(
       `INSERT INTO lore_signals (mint_address, event, box_type, symbol, name, market_cap_usd, price_usd, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
+       RETURNING ${Database.LORE_COLUMNS}`,
       [
         data.mintAddress,
         data.event,
@@ -117,7 +132,7 @@ export class Database {
     if (!this.isAvailable()) return [];
 
     const result = await this.query<LoreSignal>(
-      `SELECT * FROM lore_signals
+      `SELECT ${Database.LORE_COLUMNS} FROM lore_signals
        WHERE mint_address = $1
        ORDER BY received_at DESC
        LIMIT $2`,

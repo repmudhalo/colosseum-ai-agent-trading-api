@@ -6132,14 +6132,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       data,
     });
 
-    // ── LORE signal strategy (with database-backed history) ────────────
-    // 1. Store signal in database for history tracking.
-    // 2. Check signal history to determine context:
-    //    - First signal ever = "Fastest" → instant buy (token skipped Gamble, surging)
-    //    - Previous = "Gamble", current = "Fastest" → bot should already be in trade (check position)
-    //    - Other transitions → use existing logic
-    // 3. Only buy if we do NOT already hold the token.
-    // 4. Mcap gate still applies.
+    // ── LORE signal persistence (unconditional) ────────────────────────
+    // Store EVERY signal with a valid mint in the database, regardless of auto-trade settings.
+    // We need full history to detect transitions (e.g. Gamble → Fastest) even if a box type
+    // isn't in the auto-trade list. Query history BEFORE storing so we can determine context.
+    const mintValid = mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
+    let isFirstSignal = false;
+    let previousBox: string | null = null;
+
+    if (deps.database.isAvailable() && mintValid) {
+      try {
+        const history = await deps.database.getLoreSignalHistory(mint!, 10);
+        isFirstSignal = history.length === 0;
+        previousBox = history[0]?.boxType ?? null;
+
+        await deps.database.storeLoreSignal({
+          mintAddress: mint!,
+          event,
+          boxType: d?.boxType ?? null,
+          symbol: d?.token?.symbol ?? null,
+          name: d?.token?.name ?? null,
+          marketCapUsd: signalMcap ?? null,
+          priceUsd: null,
+          metadata: { subscriber, timestamp: ts, rawData: data },
+        });
+      } catch (err) {
+        console.error('[LORE] Database store/query error:', err);
+      }
+    }
+
+    // ── LORE auto-trade strategy ─────────────────────────────────────
     // Use the multi-bot system: resolve bot from ?bot= query param (falls back to default bot).
     const loreSvc = resolveBot(request);
     const loreConfig = deps.config.lore;
@@ -6147,7 +6169,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const wouldTrade = tradeEvents.includes(event);
     const boxType = d?.boxType;
     const boxAllowed = boxType && loreConfig?.autoTradeBoxTypes.includes(boxType);
-    const mintValid = mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
 
     if (wouldTrade && !loreConfig?.autoTradeEnabled) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'auto_trade_disabled' });
@@ -6164,31 +6185,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
           reason: 'mcap_below_minimum',
         });
         return reply.code(200).send({ received: true, event });
-      }
-
-      // Get signal history from database BEFORE storing this signal (so we can check if it's the first).
-      let signalHistory: Array<{ boxType: string | null; event: string; receivedAt: Date }> = [];
-      let isFirstSignal = false;
-      let previousBox: string | null = null;
-
-      if (deps.database.isAvailable() && mint) {
-        // Query history BEFORE storing current signal.
-        const history = await deps.database.getLoreSignalHistory(mint, 10);
-        signalHistory = history.map((s) => ({ boxType: s.boxType, event: s.event, receivedAt: s.receivedAt }));
-        isFirstSignal = history.length === 0; // No history = first signal
-        previousBox = history[0]?.boxType ?? null; // Most recent previous signal's box type
-
-        // Now store the current signal.
-        await deps.database.storeLoreSignal({
-          mintAddress: mint,
-          event,
-          boxType: d?.boxType ?? null,
-          symbol: d?.token?.symbol ?? null,
-          name: d?.token?.name ?? null,
-          marketCapUsd: signalMcap ?? null,
-          priceUsd: null, // LORE doesn't send price, we'd need to fetch it separately
-          metadata: { subscriber, timestamp: ts, rawData: data },
-        });
       }
 
       const existingPosition = loreSvc.getPosition(mint!);
