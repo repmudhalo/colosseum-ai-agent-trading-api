@@ -12,6 +12,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import bs58 from 'bs58';
 import { AppConfig } from '../config.js';
 import { SnipeService, ExitStrategy } from './snipeService.js';
 import { SnipeLearningBridge } from './snipeLearningBridge.js';
@@ -65,6 +66,28 @@ export interface StrategyPreset {
 // Default bot ID for the original single-bot setup.
 export const DEFAULT_BOT_ID = 'default';
 
+// Hard cap: each bot opens a Solana RPC connection + price monitor, so limit resource usage.
+const MAX_BOTS = 10;
+
+// Timeout for starting a bot (Solana RPC connect + wallet load). Prevents hanging forever.
+const START_BOT_TIMEOUT_MS = 15_000;
+
+/**
+ * Validate that a string is a valid Solana private key (Base58-encoded, 64 bytes when decoded).
+ * Throws a descriptive error if invalid.
+ */
+function validateBase58Key(key: string): void {
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(key);
+  } catch {
+    throw new Error('Invalid private key: not valid Base58 encoding.');
+  }
+  if (decoded.length !== 64) {
+    throw new Error(`Invalid private key: expected 64 bytes, got ${decoded.length}.`);
+  }
+}
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class BotManager {
@@ -105,20 +128,28 @@ export class BotManager {
       await this.saveConfigs();
     }
 
-    // Start all enabled bots.
+    // Start all enabled bots. One failing bot shouldn't prevent the others from starting.
     for (const bot of this.bots.values()) {
       if (bot.enabled) {
-        await this.startBot(bot);
+        try {
+          await this.startBot(bot);
+          console.log(`[BotManager] Started bot '${bot.id}' (${bot.name})`);
+        } catch (err) {
+          console.error(`[BotManager] Failed to start bot '${bot.id}':`, err instanceof Error ? err.message : err);
+        }
       }
     }
   }
 
   // ─── Public: Bot CRUD ──────────────────────────────────────────────────
 
-  /** Create a new bot. Throws if ID already exists. */
+  /** Create a new bot. Validates key, enforces limits, rolls back on failure. */
   async createBot(config: Omit<BotConfig, 'createdAt'>): Promise<BotConfig> {
     if (this.bots.has(config.id)) {
       throw new Error(`Bot '${config.id}' already exists.`);
+    }
+    if (this.bots.size >= MAX_BOTS) {
+      throw new Error(`Maximum of ${MAX_BOTS} bots reached. Remove an existing bot first.`);
     }
     if (!config.privateKeyB58) {
       throw new Error('privateKeyB58 is required.');
@@ -127,38 +158,64 @@ export class BotManager {
       throw new Error('Bot name is required.');
     }
 
+    // Validate private key format before saving anything.
+    validateBase58Key(config.privateKeyB58);
+
     const bot: BotConfig = {
       ...config,
       name: config.name.trim(),
       createdAt: new Date().toISOString(),
     };
-    this.bots.set(bot.id, bot);
-    await this.saveConfigs();
 
+    // Start the bot FIRST. Only persist to disk if startup succeeds.
+    // This prevents broken configs from being saved and failing on every restart.
     if (bot.enabled) {
-      await this.startBot(bot);
+      try {
+        await this.startBot(bot);
+      } catch (err) {
+        throw new Error(`Bot created but failed to start: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
+    this.bots.set(bot.id, bot);
+    await this.saveConfigs();
     return bot;
   }
 
-  /** Update a bot's config. Restarts the bot if wallet key changed. */
+  /** Update a bot's config. Restarts the bot if wallet key changed. Rolls back on failure. */
   async updateBot(id: string, updates: Partial<Omit<BotConfig, 'id' | 'createdAt'>>): Promise<BotConfig> {
     const bot = this.bots.get(id);
     if (!bot) throw new Error(`Bot '${id}' not found.`);
 
-    const walletChanged = updates.privateKeyB58 && updates.privateKeyB58 !== bot.privateKeyB58;
-    Object.assign(bot, updates);
-    await this.saveConfigs();
+    // Validate new private key if provided.
+    if (updates.privateKeyB58) {
+      validateBase58Key(updates.privateKeyB58);
+    }
 
-    // Restart if wallet changed or bot was toggled.
-    if (walletChanged || updates.enabled !== undefined) {
+    const walletChanged = updates.privateKeyB58 && updates.privateKeyB58 !== bot.privateKeyB58;
+    const needsRestart = walletChanged || updates.enabled !== undefined;
+
+    // Snapshot old config so we can roll back if restart fails.
+    const snapshot = { ...bot };
+
+    Object.assign(bot, updates);
+
+    if (needsRestart) {
       await this.stopBot(id);
       if (bot.enabled) {
-        await this.startBot(bot);
+        try {
+          await this.startBot(bot);
+        } catch (err) {
+          // Roll back to previous config and try to restore the old bot.
+          Object.assign(bot, snapshot);
+          try { await this.startBot(bot); } catch { /* best effort restore */ }
+          throw new Error(`Update failed, rolled back: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
+    // Only persist after successful restart.
+    await this.saveConfigs();
     return bot;
   }
 
@@ -285,7 +342,14 @@ export class BotManager {
       service.updateDefaultStrategy(bot.strategy);
     }
 
-    await service.init();
+    // Init with a timeout so a slow/unreachable RPC doesn't hang forever.
+    await Promise.race([
+      service.init(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Bot '${bot.id}' init timed out after ${START_BOT_TIMEOUT_MS / 1000}s. Check RPC and wallet key.`)), START_BOT_TIMEOUT_MS),
+      ),
+    ]);
+
     this.services.set(bot.id, service);
 
     // Start a learning bridge for this bot.
