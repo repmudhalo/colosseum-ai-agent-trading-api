@@ -103,6 +103,7 @@ import { RuntimeMetrics } from '../types.js';
 import { SnipeService } from '../services/snipeService.js';
 import { BotManager } from '../services/botManager.js';
 import { ChartCaptureService } from '../services/chartCaptureService.js';
+import { Database } from '../infra/database/db.js';
 
 interface RouteDeps {
   config: AppConfig;
@@ -197,6 +198,7 @@ interface RouteDeps {
   botManager: BotManager;
   chartCaptureService: ChartCaptureService;
   logger: EventLogger;
+  database: Database;
 }
 
 const registerAgentSchema = z.object({
@@ -6021,10 +6023,6 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // LORE — Status (for dashboard) + Webhook
   // ─────────────────────────────────────────────────────────
 
-  // Tracks the last box type we saw per mint.
-  // Used to detect upgrades (Gamble→Fastest) vs downgrades (Fastest→Gamble).
-  const loreLastBoxPerMint = new Map<string, string>();
-
   // Box tier ranking: higher number = higher tier.
   const BOX_TIER: Record<string, number> = { Gamble: 1, Fastest: 2, Highest: 3 };
   function boxTier(box: string): number { return BOX_TIER[box] ?? 0; }
@@ -6035,12 +6033,26 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
    */
   app.get('/lore/status', async () => {
     const lore = deps.config.lore ?? {};
+    let trackedTokens = 0;
+    if (deps.database.isAvailable()) {
+      try {
+        const result = await deps.database.query<{ count: string }>(
+          'SELECT COUNT(DISTINCT mint_address) as count FROM lore_signals',
+        );
+        trackedTokens = result ? Number(result.rows[0]?.count ?? 0) : 0;
+      } catch (err) {
+        // Database query failed - log but don't fail the endpoint
+        console.error('[LORE Status] Database query error:', err);
+        trackedTokens = 0;
+      }
+    }
     return {
       webhookConfigured: Boolean(lore.webhookSecret && lore.webhookSecret.length >= 10),
       autoTradeEnabled: Boolean(lore.autoTradeEnabled),
       autoTradeBoxTypes: lore.autoTradeBoxTypes ?? [],
       autoTradeAmountSol: lore.autoTradeAmountSol ?? 0.02,
-      trackedTokens: loreLastBoxPerMint.size,
+      trackedTokens,
+      databaseEnabled: deps.database.isAvailable(),
     };
   });
 
@@ -6109,24 +6121,20 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       data,
     });
 
-    // ── LORE signal strategy ──────────────────────────────────────────
-    // 1. Only buy if we do NOT already hold the token.
-    // 2. If already in a position and box changed:
-    //    - Upgrade (Gamble→Fastest): do nothing, let the position ride.
-    //    - Downgrade (Fastest→Gamble): tighten TP aggressively (halve remaining TP headroom).
-    //    - Same box: no action.
-    // 3. Mcap gate still applies.
+    // ── LORE signal strategy (with database-backed history) ────────────
+    // 1. Store signal in database for history tracking.
+    // 2. Check signal history to determine context:
+    //    - First signal ever = "Fastest" → instant buy (token skipped Gamble, surging)
+    //    - Previous = "Gamble", current = "Fastest" → bot should already be in trade (check position)
+    //    - Other transitions → use existing logic
+    // 3. Only buy if we do NOT already hold the token.
+    // 4. Mcap gate still applies.
     const loreConfig = deps.config.lore;
     const tradeEvents = ['token_featured', 'token_moved', 'token_reentry'];
     const wouldTrade = tradeEvents.includes(event);
     const boxType = d?.boxType;
     const boxAllowed = boxType && loreConfig?.autoTradeBoxTypes.includes(boxType);
     const mintValid = mint && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint);
-
-    // Clean up tracking when a token is removed from featured boxes.
-    if (event === 'token_removed' && mint) {
-      loreLastBoxPerMint.delete(mint);
-    }
 
     if (wouldTrade && !loreConfig?.autoTradeEnabled) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, reason: 'auto_trade_disabled' });
@@ -6145,11 +6153,35 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         return reply.code(200).send({ received: true, event });
       }
 
-      const previousBox = loreLastBoxPerMint.get(mint!);
-      loreLastBoxPerMint.set(mint!, boxType!);
+      // Get signal history from database BEFORE storing this signal (so we can check if it's the first).
+      let signalHistory: Array<{ boxType: string | null; event: string; receivedAt: Date }> = [];
+      let isFirstSignal = false;
+      let previousBox: string | null = null;
+
+      if (deps.database.isAvailable() && mint) {
+        // Query history BEFORE storing current signal.
+        const history = await deps.database.getLoreSignalHistory(mint, 10);
+        signalHistory = history.map((s) => ({ boxType: s.boxType, event: s.event, receivedAt: s.receivedAt }));
+        isFirstSignal = history.length === 0; // No history = first signal
+        previousBox = history[0]?.boxType ?? null; // Most recent previous signal's box type
+
+        // Now store the current signal.
+        await deps.database.storeLoreSignal({
+          mintAddress: mint,
+          event,
+          boxType: d?.boxType ?? null,
+          symbol: d?.token?.symbol ?? null,
+          name: d?.token?.name ?? null,
+          marketCapUsd: signalMcap ?? null,
+          priceUsd: null, // LORE doesn't send price, we'd need to fetch it separately
+          metadata: { subscriber, timestamp: ts, rawData: data },
+        });
+      }
+
       const existingPosition = deps.snipeService.getPosition(mint!);
       const alreadyHolding = existingPosition && existingPosition.status === 'open';
 
+      // ── Decision logic based on signal history ────────────────────────
       if (alreadyHolding) {
         // We already have a position — do NOT buy more.
         // Adjust strategy based on box transition direction.
@@ -6162,54 +6194,63 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
           if (newTier < prevTier) {
             // Downgrade (e.g. Fastest→Gamble). Momentum fading — aggressive tighten.
-            // Cut 50% of remaining headroom so we exit soon.
             const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.5, 5), 5);
             const newTP = Number(tightenedTP.toFixed(1));
-
             deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
             await deps.logger.log('info', 'lore.strategy.tightened', {
-              event, symbol, mint, boxType,
-              previousBox, previousTP: currentTP, newTP,
-              currentChangePct: currentChange,
-              reason: 'box_downgrade',
+              event, symbol, mint, boxType, previousBox, previousTP: currentTP, newTP,
+              currentChangePct: currentChange, reason: 'box_downgrade',
             });
           } else {
-            // Upgrade (e.g. Gamble→Fastest). Volume surging — price likely going up.
-            // Start preparing to exit: moderate tighten, shave 25% of headroom.
-            // Still leaves room to ride the surge.
+            // Upgrade (e.g. Gamble→Fastest). Volume surging — prepare to exit.
             const tightenedTP = Math.max(currentChange + Math.max(headroom * 0.75, 5), 5);
             const newTP = Number(tightenedTP.toFixed(1));
-
             deps.snipeService.updatePositionStrategy(mint!, { takeProfitPct: newTP });
             await deps.logger.log('info', 'lore.strategy.tightened', {
-              event, symbol, mint, boxType,
-              previousBox, previousTP: currentTP, newTP,
-              currentChangePct: currentChange,
-              reason: 'box_upgrade_prepare_exit',
+              event, symbol, mint, boxType, previousBox, previousTP: currentTP, newTP,
+              currentChangePct: currentChange, reason: 'box_upgrade_prepare_exit',
             });
           }
         } else {
           await deps.logger.log('info', 'lore.autotrade.skipped', {
-            event, symbol, mint, boxType,
-            reason: 'already_holding',
+            event, symbol, mint, boxType, reason: 'already_holding',
             positionChangePct: existingPosition.changePct,
           });
         }
       } else {
-        // No existing position → open a new trade.
-        if (previousBox === boxType) {
+        // No existing position → decide whether to buy.
+        let shouldBuy = false;
+        let buyReason = '';
+
+        if (isFirstSignal && boxType === 'Fastest') {
+          // First signal ever = "Fastest" → instant buy (token skipped Gamble, surging hard).
+          shouldBuy = true;
+          buyReason = 'first_signal_fastest';
+        } else if (previousBox === 'Gamble' && boxType === 'Fastest') {
+          // Previous = "Gamble", current = "Fastest" → bot should already be in trade.
+          // But we're not holding, so either:
+          // - We missed the Gamble buy (shouldn't happen if auto-trade was enabled)
+          // - Position was closed/stopped out
+          // - This is a re-entry scenario
+          // For now, we'll still buy but log it as a transition.
+          shouldBuy = true;
+          buyReason = 'gamble_to_fastest_transition';
+        } else if (previousBox === boxType) {
+          // Same box as previous signal → skip (already processed or redundant).
           await deps.logger.log('info', 'lore.autotrade.skipped', {
-            event, symbol, mint, boxType,
-            reason: 'same_box_no_position',
-            previousBox,
+            event, symbol, mint, boxType, reason: 'same_box_no_position', previousBox,
           });
         } else {
+          // Other transitions → buy.
+          shouldBuy = true;
+          buyReason = previousBox ? `transition_from_${previousBox}` : 'new_signal';
+        }
+
+        if (shouldBuy) {
           const tag = `lore-${event}-${boxType}` + (previousBox ? `-from-${previousBox}` : '');
           await deps.logger.log('info', 'lore.autotrade.triggered', {
-            event, symbol, mint, boxType,
-            previousBox: previousBox ?? null,
-            amountSol: loreConfig.autoTradeAmountSol,
-            tag,
+            event, symbol, mint, boxType, previousBox: previousBox ?? null,
+            amountSol: loreConfig.autoTradeAmountSol, tag, buyReason, isFirstSignal,
           });
           deps.snipeService.snipe({
             mintAddress: mint!,

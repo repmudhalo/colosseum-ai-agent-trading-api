@@ -97,6 +97,9 @@ import { BotManager } from './services/botManager.js';
 import { ChartCaptureService } from './services/chartCaptureService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
+import { Database } from './infra/database/db.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 export interface AppContext {
   app: ReturnType<typeof Fastify>;
@@ -136,6 +139,45 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
 
   const logger = new EventLogger(config.paths.logFile);
   await logger.init();
+
+  // Database: PostgreSQL for LORE signal history and other persistent data.
+  // Initialize asynchronously to avoid blocking startup if database is slow/unavailable.
+  const database = new Database(config.database);
+  let dbAvailable = false;
+  try {
+    dbAvailable = await database.init();
+    if (dbAvailable) {
+      console.log('[Database] Connected to PostgreSQL');
+      // Run migrations on startup (non-blocking - errors are logged but don't stop startup)
+      try {
+        const migrationPath = path.resolve(process.cwd(), 'migrations', '001_create_lore_signals.sql');
+        const migrationSQL = await fs.readFile(migrationPath, 'utf-8');
+        // Run migration - if tables already exist, CREATE TABLE IF NOT EXISTS will handle it gracefully
+        const result = await database.query(migrationSQL);
+        if (result) {
+          console.log('[Database] Migrations applied');
+        }
+      } catch (err: unknown) {
+        const errObj = err as { code?: string; message?: string };
+        if (errObj.code === 'ENOENT') {
+          // Migration file doesn't exist - that's okay, might be running from a different directory
+          console.log('[Database] Migration file not found (skipping)');
+        } else if (errObj.message?.includes('already exists') || errObj.message?.includes('duplicate')) {
+          // Table already exists - that's fine, migration was already run
+          console.log('[Database] Tables already exist (migration already applied)');
+        } else {
+          console.error('[Database] Migration error:', errObj.message || err);
+          // Don't fail startup if migrations fail - database might already have tables or be in a different state
+        }
+      }
+    } else {
+      console.log('[Database] PostgreSQL not configured or unavailable. Database features disabled.');
+    }
+  } catch (err) {
+    console.error('[Database] Initialization error:', err);
+    // Continue without database - app should still work
+    dbAvailable = false;
+  }
 
   const strategyRegistry = new StrategyRegistry();
   const feeEngine = new FeeEngine(config.trading);
@@ -373,6 +415,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     chartCaptureService,
     x402Policy,
     logger,
+    database,
     getRuntimeMetrics: () => {
       const state = stateStore.snapshot();
       return {

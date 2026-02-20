@@ -115,6 +115,12 @@ export const config = {
     /** Minimum market cap (USD) to open or keep a position. Tokens below this are force-closed and new trades are blocked. */
     minMarketCapUsd: parseNumber(process.env.SNIPE_MIN_MCAP_USD, 5000),
   },
+  database: {
+    /** PostgreSQL connection string (postgresql://user:pass@host:port/dbname). If not set, database features are disabled. */
+    connectionString: process.env.DATABASE_URL,
+    /** Max number of connections in the pool. */
+    maxConnections: parseNumber(process.env.DATABASE_MAX_CONNECTIONS, 10),
+  },
 };
 
 export type AppConfig = typeof config;
