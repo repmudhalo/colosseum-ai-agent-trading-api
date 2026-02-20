@@ -93,6 +93,7 @@ import { AgentIdentityService } from './services/agentIdentityService.js';
 import { PredictionMarketService } from './services/predictionMarketService.js';
 import { MeteoraService } from './services/meteoraService.js';
 import { SnipeLearningBridge } from './services/snipeLearningBridge.js';
+import { BotManager } from './services/botManager.js';
 import { ChartCaptureService } from './services/chartCaptureService.js';
 import { RateLimiter } from './api/rateLimiter.js';
 import { StagedPipeline } from './domain/execution/stagedPipeline.js';
@@ -261,15 +262,15 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     return squad ? squad.memberIds : null;
   });
 
-  // Snipe service for direct token trading by mint address (for bot integrations).
-  // Loads persisted state from disk and auto-restarts price monitor for open positions.
-  const snipeService = new SnipeService(config);
-  await snipeService.init();
+  // Bot manager: supports multiple snipe bots, each with their own wallet and strategy.
+  // Loads bot configs from data/bots.json. Creates a default bot from env vars if none exist.
+  // Each bot gets its own SnipeService, persistence file, and learning bridge.
+  const botManager = new BotManager(config, stateStore, agentLearningService);
+  await botManager.init();
 
-  // Bridge: feeds snipe trades into the learning pipeline (StateStore + AgentLearningService).
-  // Writes ExecutionRecords for analytics, triggers learning cycles, and auto-adjusts strategy.
-  const snipeLearningBridge = new SnipeLearningBridge(stateStore, agentLearningService, snipeService);
-  snipeLearningBridge.start();
+  // For backward compatibility, expose the default bot's SnipeService directly.
+  const snipeService = botManager.getDefaultService() ?? new SnipeService(config);
+  if (!botManager.getDefaultService()) await snipeService.init();
 
   // Chart capture: screenshots DexScreener TradingView charts on buy/sell/auto-exit.
   // Builds a visual library of chart patterns for future pattern recognition.
@@ -368,6 +369,7 @@ export async function buildApp(config: AppConfig): Promise<AppContext> {
     dataPipelineService,
     meteoraService,
     snipeService,
+    botManager,
     chartCaptureService,
     x402Policy,
     logger,

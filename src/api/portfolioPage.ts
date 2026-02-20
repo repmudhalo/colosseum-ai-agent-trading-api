@@ -145,8 +145,12 @@ function render() {
   }
 }
 
+function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
+var currentBot=getBot();
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+
 async function load() {
-  portfolio = await api('/snipe/portfolio');
+  portfolio = await botApi('/snipe/portfolio');
   if (portfolio) {
     $('#s-open').textContent = portfolio.openPositions ? portfolio.openPositions.length : 0;
     $('#s-closed').textContent = portfolio.closedPositions ? portfolio.closedPositions.length : 0;

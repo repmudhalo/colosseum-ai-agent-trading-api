@@ -102,7 +102,7 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn-accent{background:var(--accent-dim);border-color:rgba(200,255,0,.3);color:var(--accent)}
 .btn-accent:hover{background:rgba(200,255,0,.2)}
-input[type="number"],input[type="text"]{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:.82rem;font-family:var(--mono);width:100%;outline:none;transition:border .15s}
+input[type="number"],input[type="text"],input[type="password"]{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:.82rem;font-family:var(--mono);width:100%;outline:none;transition:border .15s}
 input:focus{border-color:var(--accent)}
 label{font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}

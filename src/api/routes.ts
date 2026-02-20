@@ -101,6 +101,7 @@ import { RateLimiter } from './rateLimiter.js';
 import { StagedPipeline } from '../domain/execution/stagedPipeline.js';
 import { RuntimeMetrics } from '../types.js';
 import { SnipeService } from '../services/snipeService.js';
+import { BotManager } from '../services/botManager.js';
 import { ChartCaptureService } from '../services/chartCaptureService.js';
 
 interface RouteDeps {
@@ -193,6 +194,7 @@ interface RouteDeps {
   meteoraService: MeteoraService;
   getRuntimeMetrics: () => RuntimeMetrics;
   snipeService: SnipeService;
+  botManager: BotManager;
   chartCaptureService: ChartCaptureService;
   logger: EventLogger;
 }
@@ -272,6 +274,18 @@ const sendDomainError = (reply: FastifyReply, error: unknown): void => {
 };
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
+
+  // ─── Helper: resolve SnipeService from ?bot= query param ────────────
+  function resolveBot(request: { query: unknown }): SnipeService {
+    const q = request.query as Record<string, string> | undefined;
+    const botId = q?.bot || undefined;
+    const service = deps.botManager.getService(botId);
+    if (!service) {
+      return deps.snipeService;
+    }
+    return service;
+  }
+
   app.get('/', async () => ({
     name: deps.config.app.name,
     version: '0.4.0',
@@ -5551,9 +5565,89 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
   registerMeteoraRoutes(app, deps.meteoraService);
 
+  // ─── Bot management endpoints ───────────────────────────────────────
+
+  /** List all bots with summary info. */
+  app.get('/bots', async () => {
+    return { bots: await deps.botManager.listBotInfo() };
+  });
+
+  /** Get a single bot's config (without private key). */
+  app.get('/bots/:botId', async (request, reply) => {
+    const { botId } = request.params as { botId: string };
+    const config = deps.botManager.getBotConfig(botId);
+    if (!config) return reply.code(404).send({ error: `Bot '${botId}' not found.` });
+    const { privateKeyB58, ...safe } = config;
+    return { ...safe, hasWallet: !!privateKeyB58 };
+  });
+
+  /** Create a new bot. */
+  app.post('/bots', async (request, reply) => {
+    const schema = z.object({
+      id: z.string().min(1).max(32).regex(/^[a-zA-Z0-9_-]+$/),
+      name: z.string().min(1).max(64),
+      privateKeyB58: z.string().min(32),
+      enabled: z.boolean().default(true),
+      strategy: z.object({
+        takeProfitPct: z.number().positive().optional(),
+        stopLossPct: z.number().positive().optional(),
+        trailingStopPct: z.number().positive().nullable().optional(),
+        moonBagPct: z.number().min(0).max(100).optional(),
+      }).optional(),
+      minMarketCapUsd: z.number().min(0).optional(),
+    });
+    const parse = schema.safeParse(request.body);
+    if (!parse.success) return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+
+    try {
+      const bot = await deps.botManager.createBot(parse.data);
+      const { privateKeyB58, ...safe } = bot;
+      return reply.code(201).send(safe);
+    } catch (err) {
+      return reply.code(400).send({ error: String(err) });
+    }
+  });
+
+  /** Update a bot's config. */
+  app.put('/bots/:botId', async (request, reply) => {
+    const { botId } = request.params as { botId: string };
+    const schema = z.object({
+      name: z.string().min(1).max(64).optional(),
+      enabled: z.boolean().optional(),
+      strategy: z.object({
+        takeProfitPct: z.number().positive().optional(),
+        stopLossPct: z.number().positive().optional(),
+        trailingStopPct: z.number().positive().nullable().optional(),
+        moonBagPct: z.number().min(0).max(100).optional(),
+      }).optional(),
+      minMarketCapUsd: z.number().min(0).optional(),
+    });
+    const parse = schema.safeParse(request.body);
+    if (!parse.success) return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
+
+    try {
+      const bot = await deps.botManager.updateBot(botId, parse.data);
+      const { privateKeyB58, ...safe } = bot;
+      return safe;
+    } catch (err) {
+      return reply.code(404).send({ error: String(err) });
+    }
+  });
+
+  /** Remove a bot. */
+  app.delete('/bots/:botId', async (request, reply) => {
+    const { botId } = request.params as { botId: string };
+    try {
+      await deps.botManager.removeBot(botId);
+      return { removed: true };
+    } catch (err) {
+      return reply.code(400).send({ error: String(err) });
+    }
+  });
+
   // ─── Snipe endpoints (direct trading by mint address) ─────────────
-  // Designed for external bot integration (e.g., copenclaw).
-  // Send a contract address → analyze → swap in one call.
+  // All snipe routes accept ?bot=<id> to target a specific bot.
+  // If omitted, the default bot is used.
 
   const snipeStrategySchema = z.object({
     takeProfitPct: z.number().positive().max(10000).optional(),
@@ -5589,13 +5683,14 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
     }
 
-    if (!deps.snipeService.isReady()) {
+    const svc = resolveBot(request);
+    if (!svc.isReady()) {
       return reply.code(503).send({
-        error: 'Snipe service not ready. Check SOLANA_RPC_URL and SOLANA_PRIVATE_KEY_B58.',
+        error: 'Snipe service not ready. Check wallet configuration.',
       });
     }
 
-    const result = await deps.snipeService.snipe(parse.data);
+    const result = await svc.snipe(parse.data);
     return reply.code(result.success ? 200 : 400).send(result);
   });
 
@@ -5621,14 +5716,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
     }
 
-    if (!deps.snipeService.isReady()) {
+    const svc = resolveBot(request);
+    if (!svc.isReady()) {
       return reply.code(503).send({
-        error: 'Snipe service not ready. Check SOLANA_RPC_URL and SOLANA_PRIVATE_KEY_B58.',
+        error: 'Snipe service not ready. Check wallet configuration.',
       });
     }
 
     const { mintAddress, entryPriceUsd, totalSolSpent, tag, strategy } = parse.data;
-    const result = await deps.snipeService.importPosition(mintAddress, {
+    const result = await svc.importPosition(mintAddress, {
       entryPriceUsd,
       totalSolSpent,
       tag,
@@ -5661,7 +5757,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(400).send({ error: 'Invalid request', details: parse.error.issues });
     }
 
-    const analysis = await deps.snipeService.analyzeToken(
+    const svc = resolveBot(request);
+    const analysis = await svc.analyzeToken(
       parse.data.mintAddress,
       parse.data.amountSol,
       parse.data.side,
@@ -5673,29 +5770,31 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   /**
    * GET /snipe/wallet — Get the trading wallet address and readiness status.
    */
-  app.get('/snipe/wallet', async () => ({
-    ready: deps.snipeService.isReady(),
-    walletAddress: deps.snipeService.walletAddress() ?? null,
-    solBalance: await deps.snipeService.getSolBalance(),
-    broadcastEnabled: deps.config.trading.liveBroadcastEnabled,
-  }));
+  app.get('/snipe/wallet', async (request) => {
+    const svc = resolveBot(request);
+    return {
+      ready: svc.isReady(),
+      walletAddress: svc.walletAddress() ?? null,
+      solBalance: await svc.getSolBalance(),
+      botId: svc.botId,
+      broadcastEnabled: deps.config.trading.liveBroadcastEnabled,
+    };
+  });
 
   /**
    * GET /snipe/portfolio — Full portfolio summary.
-   *
-   * Returns all open/closed positions, total P&L, and trade count.
-   * The OpenClaw bot should call this to understand its current state.
    */
-  app.get('/snipe/portfolio', async () => {
-    return await deps.snipeService.getPortfolio();
+  app.get('/snipe/portfolio', async (request) => {
+    const svc = resolveBot(request);
+    return await svc.getPortfolio();
   });
 
   /**
    * GET /snipe/positions — All open positions (tokens currently held).
-   * Reconciles with wallet first so manually closed positions are excluded.
    */
-  app.get('/snipe/positions', async () => {
-    const portfolio = await deps.snipeService.getPortfolio();
+  app.get('/snipe/positions', async (request) => {
+    const svc = resolveBot(request);
+    const portfolio = await svc.getPortfolio();
     return { positions: portfolio.openPositions };
   });
 
@@ -5704,7 +5803,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
    */
   app.get('/snipe/positions/:mintAddress', async (request, reply) => {
     const { mintAddress } = request.params as { mintAddress: string };
-    const position = deps.snipeService.getPosition(mintAddress);
+    const svc = resolveBot(request);
+    const position = svc.getPosition(mintAddress);
     if (!position) {
       return reply.code(404).send({ error: 'No position found for this mint address.' });
     }
@@ -5715,9 +5815,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
    * GET /snipe/trades — Trade history. Optional ?mint=xxx&limit=50 filters.
    */
   app.get('/snipe/trades', async (request) => {
+    const svc = resolveBot(request);
     const query = request.query as { mint?: string; limit?: string };
     const limit = Math.min(Number(query.limit) || 50, 200);
-    return { trades: deps.snipeService.getTrades(query.mint, limit) };
+    return { trades: svc.getTrades(query.mint, limit) };
   });
 
   // ─── Strategy management ────────────────────────────────────────────
@@ -5725,10 +5826,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   /**
    * GET /snipe/strategy — Get the current default exit strategy.
    */
-  app.get('/snipe/strategy', async () => {
+  app.get('/snipe/strategy', async (request) => {
+    const svc = resolveBot(request);
     return {
-      defaultStrategy: deps.snipeService.getDefaultStrategy(),
-      minMarketCapUsd: deps.snipeService.getMinMarketCapUsd(),
+      defaultStrategy: svc.getDefaultStrategy(),
+      minMarketCapUsd: svc.getMinMarketCapUsd(),
     };
   });
 
@@ -5753,16 +5855,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     if (!parse.success) {
       return reply.code(400).send({ error: 'Invalid strategy', details: parse.error.issues });
     }
-    const updated = deps.snipeService.updateDefaultStrategy(parse.data);
+    const svc = resolveBot(request);
+    const updated = svc.updateDefaultStrategy(parse.data);
     return { defaultStrategy: updated };
   });
 
   /**
    * PUT /snipe/positions/:mintAddress/strategy — Override strategy for a single position.
-   *
-   * The bot calls this to change TP/SL/trailing for one active trade.
-   *
-   * Body: { takeProfitPct?, stopLossPct?, trailingStopPct? }
    */
   app.put('/snipe/positions/:mintAddress/strategy', async (request, reply) => {
     const { mintAddress } = request.params as { mintAddress: string };
@@ -5771,7 +5870,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return reply.code(400).send({ error: 'Invalid strategy', details: parse.error.issues });
     }
 
-    const position = deps.snipeService.updatePositionStrategy(mintAddress, parse.data);
+    const svc = resolveBot(request);
+    const position = svc.updatePositionStrategy(mintAddress, parse.data);
     if (!position) {
       return reply.code(404).send({ error: 'No open position found for this mint address.' });
     }

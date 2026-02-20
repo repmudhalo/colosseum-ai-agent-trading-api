@@ -93,13 +93,16 @@ export function renderStrategyPage(): string {
     </div>`,
     scripts: `
 let strat = null;
+function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
+var currentBot=getBot();
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
 
 function kvRow(label, val) {
   return '<div class="kv"><span class="k">' + label + '</span><span class="v">' + val + '</span></div>';
 }
 
 async function load() {
-  const res = await api('/snipe/strategy');
+  const res = await botApi('/snipe/strategy');
   if (!res || !res.defaultStrategy) return;
   strat = res.defaultStrategy;
   const el = $('#strategy-view');
@@ -137,7 +140,7 @@ async function save(e) {
 
   if (!Object.keys(body).length) return;
 
-  const res = await fetch(BASE + '/snipe/strategy', {
+  const res = await fetch(BASE + '/snipe/strategy' + (currentBot ? '?bot=' + encodeURIComponent(currentBot) : ''), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

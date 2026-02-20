@@ -19,10 +19,6 @@ import { AgentLearningService } from './agentLearningService.js';
 import { SnipeService } from './snipeService.js';
 import { ExecutionRecord } from '../types.js';
 
-// Use a fixed "agent" ID for all snipe trades so the learning service
-// can analyze them as a cohesive set of trades.
-const SNIPE_AGENT_ID = 'snipe-bot';
-
 // Run a learning cycle every N snipe trades.
 const LEARNING_CYCLE_INTERVAL = 5;
 
@@ -32,26 +28,36 @@ const MIN_CONFIDENCE_TO_APPLY = 0.6;
 export class SnipeLearningBridge {
   private tradeCount = 0;
   private unsubscribers: (() => void)[] = [];
+  /** Agent ID in the StateStore for this bot's trades. */
+  private readonly agentId: string;
 
   constructor(
     private readonly store: StateStore,
     private readonly learningService: AgentLearningService,
     private readonly snipeService: SnipeService,
-  ) {}
+    private readonly botId: string = 'default',
+  ) {
+    // Each bot gets its own agent ID in the learning system.
+    this.agentId = botId === 'default' ? 'snipe-bot' : `snipe-bot-${botId}`;
+  }
 
   /**
    * Start listening to snipe events.
    * Call once on startup (after all services are initialized).
    */
   start(): void {
-    // Listen for all snipe trades (manual buys, sells, auto-exits, re-entries).
+    // Listen for snipe trades from THIS bot only.
     const unsub1 = eventBus.on('snipe.trade', (_event, data) => {
-      this.handleSnipeTrade(data as SnipeTradeEvent);
+      const payload = data as SnipeTradeEvent & { botId?: string };
+      if ((payload.botId ?? 'default') !== this.botId) return;
+      this.handleSnipeTrade(payload);
     });
 
-    // Listen for auto-exits to trigger immediate learning.
+    // Listen for auto-exits from THIS bot only.
     const unsub2 = eventBus.on('snipe.auto_exit', (_event, data) => {
-      this.handleAutoExit(data as AutoExitEvent);
+      const payload = data as AutoExitEvent & { botId?: string };
+      if ((payload.botId ?? 'default') !== this.botId) return;
+      this.handleAutoExit(payload);
     });
 
     this.unsubscribers.push(unsub1, unsub2);
@@ -115,7 +121,7 @@ export class SnipeLearningBridge {
     const record: ExecutionRecord = {
       id: executionId,
       intentId: `snipe_intent_${event.tradeId}`,
-      agentId: SNIPE_AGENT_ID,
+      agentId: this.agentId,
       symbol,
       side: event.side,
       quantity: Number(event.tokenAmount) || 0,
@@ -164,10 +170,10 @@ export class SnipeLearningBridge {
   private runLearningCycle(): void {
     try {
       // 1. Analyze trade patterns.
-      const patterns = this.learningService.analyzePatterns(SNIPE_AGENT_ID);
+      const patterns = this.learningService.analyzePatterns(this.agentId);
 
       // 2. Adapt parameters based on recent performance.
-      const adaptation = this.learningService.adaptParameters(SNIPE_AGENT_ID);
+      const adaptation = this.learningService.adaptParameters(this.agentId);
 
       // 3. Feed insights back: if the learning service suggests changes
       //    with high confidence, apply them to the snipe default strategy.
@@ -231,13 +237,13 @@ export class SnipeLearningBridge {
    */
   private async ensureSnipeAgent(): Promise<void> {
     const state = this.store.snapshot();
-    if (state.agents[SNIPE_AGENT_ID]) return;
+    if (state.agents[this.agentId]) return;
 
     const now = new Date().toISOString();
     await this.store.transaction((s) => {
-      s.agents[SNIPE_AGENT_ID] = {
-        id: SNIPE_AGENT_ID,
-        name: 'Snipe Bot',
+      s.agents[this.agentId] = {
+        id: this.agentId,
+        name: this.botId === 'default' ? 'Snipe Bot' : `Snipe Bot (${this.botId})`,
         apiKey: 'snipe-internal',
         strategyId: 'momentum-v1', // Placeholder strategy ID.
         startingCapitalUsd: 0,

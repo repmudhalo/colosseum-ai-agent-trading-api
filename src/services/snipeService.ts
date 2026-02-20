@@ -232,7 +232,11 @@ export class SnipeService {
   /** Debounce timer for disk writes (batch rapid changes). */
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly config: AppConfig) {
+  /** Unique ID for this bot instance (used in events and persistence). */
+  readonly botId: string;
+
+  constructor(private readonly config: AppConfig, botId?: string) {
+    this.botId = botId ?? 'default';
     this.jupiterClient = new JupiterClient(
       config.trading.jupiterQuoteUrl,
       config.trading.jupiterSwapUrl,
@@ -267,8 +271,9 @@ export class SnipeService {
       maxReEntries: this.envNum('SNIPE_MAX_RE_ENTRIES', DEFAULT_MAX_RE_ENTRIES),
     };
 
-    // Persistence file in the same data directory as the main state.
-    this.persistPath = path.resolve(config.paths.dataDir, 'snipe-state.json');
+    // Per-bot persistence file. Default bot keeps the original filename for backward compat.
+    const filename = this.botId === 'default' ? 'snipe-state.json' : `snipe-state-${this.botId}.json`;
+    this.persistPath = path.resolve(config.paths.dataDir, filename);
   }
 
   // ─── Public: Init (load persisted state) ──────────────────────────────
@@ -333,7 +338,7 @@ export class SnipeService {
     const position = this.positions.get(mintAddress);
     if (!position || position.status !== 'open') return null;
     this.applyStrategyOverrides(position.exitStrategy, overrides);
-    eventBus.emit('snipe.strategy_updated', { mintAddress, overrides });
+    eventBus.emit('snipe.strategy_updated', { botId: this.botId, mintAddress, overrides });
     this.schedulePersist();
     return this.enrichPosition(position);
   }
@@ -408,6 +413,7 @@ export class SnipeService {
 
     const meta = this.tokenMetadata.get(mintAddress);
     eventBus.emit('snipe.trade', {
+      botId: this.botId,
       tradeId: `import_${Date.now()}`,
       mintAddress,
       symbol: meta?.symbol ?? null,
@@ -947,7 +953,7 @@ export class SnipeService {
 
       // Emit event and persist.
       this.emitTradeEvent(trade, position);
-      eventBus.emit('snipe.auto_exit', { mintAddress, reason, isTakeProfit, keepMoonBag });
+      eventBus.emit('snipe.auto_exit', { botId: this.botId, mintAddress, reason, isTakeProfit, keepMoonBag });
       this.schedulePersist();
 
     } catch {
@@ -1023,7 +1029,7 @@ export class SnipeService {
 
       // Emit event and persist.
       this.emitTradeEvent(trade, position);
-      eventBus.emit('snipe.re_entry', { mintAddress, dipPct, reEntryCount: position.reEntryCount });
+      eventBus.emit('snipe.re_entry', { botId: this.botId, mintAddress, dipPct, reEntryCount: position.reEntryCount });
       this.schedulePersist();
 
     } catch {
@@ -1129,13 +1135,26 @@ export class SnipeService {
     const tradeTokens = BigInt(tokenAmount);
 
     if (side === 'buy') {
+      // If re-opening a closed position, reset tracking for a clean slate.
+      const wasClosedOrEmpty = position.status === 'closed' || currentTokens === BigInt(0);
+      if (wasClosedOrEmpty) {
+        position.totalSolSpent = 0;
+        position.totalSolReceived = 0;
+        position.realizedPnlSol = 0;
+        position.peakPriceUsd = entryPriceUsd;
+        position.isMoonBag = false;
+        position.firstTradeAt = timestamp;
+      }
+
       position.tokensHeld = (currentTokens + tradeTokens).toString();
       position.totalSolSpent += solAmount;
       position.buyCount += 1;
       if (decimals > 0) position.tokenDecimals = decimals;
       if (entryPriceUsd !== null) position.entryPriceUsd = entryPriceUsd;
+      // Always reset peak to current entry so trailing stop starts fresh.
+      if (entryPriceUsd !== null) position.peakPriceUsd = entryPriceUsd;
       position.exitStrategy = { ...exitStrategy };
-      position.autoExitReason = null; // Clear on re-buy.
+      position.autoExitReason = null;
       position.status = 'open';
     } else {
       const remaining = currentTokens > tradeTokens ? currentTokens - tradeTokens : BigInt(0);
@@ -1293,6 +1312,7 @@ export class SnipeService {
   private emitTradeEvent(trade: SnipeTrade, position: SnipePosition): void {
     const meta = this.tokenMetadata.get(trade.mintAddress);
     eventBus.emit('snipe.trade', {
+      botId: this.botId,
       tradeId: trade.id,
       mintAddress: trade.mintAddress,
       symbol: meta?.symbol ?? null,

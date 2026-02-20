@@ -95,10 +95,14 @@ function renderTable() {
 function prev() { if (page > 0) { page--; renderTable(); } }
 function next() { if ((page + 1) * PAGE_SIZE < allTrades.length) { page++; renderTable(); } }
 
+function getBot(){try{var p=new URLSearchParams(location.search);return p.get('bot')||'';}catch{return '';}}
+var currentBot=getBot();
+function botApi(path){return api(path+(path.includes('?')?'&':'?')+'bot='+encodeURIComponent(currentBot));}
+
 async function load() {
   const mint = ($('#filter-mint').value || '').trim() || undefined;
   const url = '/snipe/trades?limit=200' + (mint ? '&mint=' + encodeURIComponent(mint) : '');
-  const res = await api(url);
+  const res = await botApi(url);
   allTrades = (res && res.trades) ? res.trades : [];
   page = 0;
   $('#trade-total').textContent = '(' + allTrades.length + ')';
