@@ -88,6 +88,7 @@ export function renderStrategyPage(): string {
         <div class="kv"><span class="k">Trailing stop</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Full sell when price drops trail% from its peak.</span></div>
         <div class="kv"><span class="k">Moon bag</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">% of tokens kept after TP. Rides with trailing stop only.</span></div>
         <div class="kv"><span class="k">Re-entry</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">After TP, auto-buy back when price dips re-entry% from sell.</span></div>
+        <div class="kv"><span class="k">Min market cap</span><span class="v" style="font-family:var(--sans);font-weight:400;color:var(--muted)">Force-close if mcap drops below this. Blocks new LORE trades too.</span></div>
       </div>
     </div>`,
     scripts: `
@@ -102,6 +103,7 @@ async function load() {
   if (!res || !res.defaultStrategy) return;
   strat = res.defaultStrategy;
   const el = $('#strategy-view');
+  const minMcap = res.minMarketCapUsd || 5000;
   el.innerHTML =
     kvRow('Take profit', strat.takeProfitPct + '%') +
     kvRow('Stop loss', strat.stopLossPct + '%') +
@@ -110,7 +112,8 @@ async function load() {
     kvRow('Re-entry', strat.reEntryEnabled ? 'Enabled' : 'Disabled') +
     kvRow('Re-entry dip', strat.reEntryDipPct + '%') +
     kvRow('Re-entry SOL', strat.reEntryAmountSol) +
-    kvRow('Max re-entries', strat.maxReEntries);
+    kvRow('Max re-entries', strat.maxReEntries) +
+    kvRow('Min market cap', '$' + minMcap.toLocaleString());
 
   $('#f-tp').placeholder = strat.takeProfitPct;
   $('#f-sl').placeholder = strat.stopLossPct;

@@ -112,6 +112,8 @@ export interface SnipePosition {
   symbol?: string | null;
   /** Token name. Filled from DexScreener when available. */
   name?: string | null;
+  /** Last known market cap from DexScreener. Null if unknown. */
+  marketCapUsd?: number | null;
 }
 
 export interface SnipeTrade {
@@ -204,6 +206,8 @@ export class SnipeService {
   private readonly jupiterClient: JupiterClient;
   private positions: Map<string, SnipePosition> = new Map();
   private prices: Map<string, TokenPrice> = new Map();
+  /** Last known market cap per mint (from DexScreener). */
+  private marketCaps: Map<string, number> = new Map();
   /** Token symbol/name from DexScreener (mint -> { symbol, name }) for agent display. */
   private tokenMetadata: Map<string, { symbol: string; name: string }> = new Map();
   private trades: SnipeTrade[] = [];
@@ -314,6 +318,10 @@ export class SnipeService {
   walletAddress(): string | undefined { return this.jupiterClient.publicKey(); }
   async getSolBalance(): Promise<number | null> { return this.jupiterClient.getSolBalance(); }
   getDefaultStrategy(): ExitStrategy { return { ...this.defaultStrategy }; }
+  /** Last known market cap for a token (from DexScreener), or null if unknown. */
+  getMarketCap(mintAddress: string): number | null { return this.marketCaps.get(mintAddress) ?? null; }
+  /** Minimum market cap threshold from config. */
+  getMinMarketCapUsd(): number { return this.config.snipe?.minMarketCapUsd ?? 5000; }
 
   // ─── Public: Strategy Override ────────────────────────────────────────
 
@@ -708,13 +716,25 @@ export class SnipeService {
    * Handles TP (with moon bag), SL, and trailing stop.
    */
   private async checkAutoExits(): Promise<void> {
+    const minMcap = this.config.snipe?.minMarketCapUsd ?? 5000;
+
     for (const [mint, position] of this.positions) {
       if (position.status !== 'open') continue;
-      if (position.entryPriceUsd === null) continue;
       if (this.autoExitLocks.has(mint)) continue;
 
       const price = this.prices.get(mint);
       if (!price) continue;
+
+      // Force-close if market cap dropped below the configured minimum.
+      const mcap = this.marketCaps.get(mint);
+      if (mcap !== undefined && mcap < minMcap) {
+        this.executeAutoExit(mint, position, `mcap_too_low:$${mcap.toFixed(0)}_(min:$${minMcap})`, false);
+        // Also stop watching for re-entry on this token.
+        this.watchedTokens.delete(mint);
+        continue;
+      }
+
+      if (position.entryPriceUsd === null) continue;
 
       const currentPrice = price.priceUsd;
       const entryPrice = position.entryPriceUsd;
@@ -756,11 +776,20 @@ export class SnipeService {
    * If price drops enough from the TP sell price, auto-buy back in.
    */
   private async checkReEntries(): Promise<void> {
+    const minMcap = this.config.snipe?.minMarketCapUsd ?? 5000;
+
     for (const [mint, watched] of this.watchedTokens) {
       if (this.autoExitLocks.has(mint)) continue;
 
       const price = this.prices.get(mint);
       if (!price) continue;
+
+      // Skip re-entry if market cap is below minimum — stop watching this token.
+      const mcap = this.marketCaps.get(mint);
+      if (mcap !== undefined && mcap < minMcap) {
+        this.watchedTokens.delete(mint);
+        continue;
+      }
 
       const currentPrice = price.priceUsd;
       const changeFromSell = ((currentPrice - watched.sellPriceUsd) / watched.sellPriceUsd) * 100;
@@ -1000,6 +1029,8 @@ export class SnipeService {
         baseToken?: { address?: string; symbol?: string; name?: string };
         priceUsd?: string;
         priceChange?: { h24?: number };
+        marketCap?: number;
+        fdv?: number;
       }>;
 
       if (!Array.isArray(pairs)) continue;
@@ -1012,6 +1043,11 @@ export class SnipeService {
           const symbol = (pair.baseToken?.symbol ?? '—').trim() || '—';
           const name = (pair.baseToken?.name ?? '—').trim() || '—';
           this.tokenMetadata.set(mint, { symbol, name });
+          // Store market cap (prefer marketCap, fall back to fdv).
+          const mcap = pair.marketCap ?? pair.fdv;
+          if (mcap && Number.isFinite(mcap) && mcap > 0) {
+            this.marketCaps.set(mint, mcap);
+          }
         }
       }
     }
@@ -1077,6 +1113,7 @@ export class SnipeService {
     const meta = this.tokenMetadata.get(position.mintAddress);
     enriched.symbol = meta?.symbol ?? null;
     enriched.name = meta?.name ?? null;
+    enriched.marketCapUsd = this.marketCaps.get(position.mintAddress) ?? null;
 
     if (price) {
       enriched.currentPriceUsd = price.priceUsd;

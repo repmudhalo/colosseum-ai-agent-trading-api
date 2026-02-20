@@ -5726,7 +5726,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
    * GET /snipe/strategy — Get the current default exit strategy.
    */
   app.get('/snipe/strategy', async () => {
-    return { defaultStrategy: deps.snipeService.getDefaultStrategy() };
+    return {
+      defaultStrategy: deps.snipeService.getDefaultStrategy(),
+      minMarketCapUsd: deps.snipeService.getMinMarketCapUsd(),
+    };
   });
 
   const strategyOverrideSchema = z.object({
@@ -5926,9 +5929,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const event = payload.event ?? eventName ?? 'unknown';
     const data = payload.data ?? {};
     const ts = payload.timestamp ?? timestamp ?? new Date().toISOString();
-    const d = data as { boxType?: string; token?: { address?: string; symbol?: string; name?: string } };
+    const d = data as { boxType?: string; token?: { address?: string; symbol?: string; name?: string; mc?: number } };
     const mint = d?.token?.address;
     const symbol = d?.token?.symbol ?? mint?.slice(0, 8) ?? '?';
+    const signalMcap = d?.token?.mc;
 
     // Log every LORE webhook received (catch) — visible in console and data/events.ndjson
     await deps.logger.log('info', 'lore.webhook.received', {
@@ -5937,6 +5941,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       symbol,
       mint: mint ?? null,
       boxType: d?.boxType ?? null,
+      mcap: signalMcap ?? null,
     });
 
     eventBus.emit('lore.signal', {
@@ -5968,6 +5973,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     } else if (wouldTrade && (!boxAllowed || !mintValid)) {
       await deps.logger.log('info', 'lore.autotrade.skipped', { event, symbol, boxType, reason: 'box_type_not_allowed_or_invalid_mint' });
     } else if (loreConfig?.autoTradeEnabled && deps.snipeService.isReady() && wouldTrade && boxAllowed && mintValid) {
+      // Block trade if LORE-reported market cap is below the configured minimum.
+      const minMcap = deps.config.snipe?.minMarketCapUsd ?? 5000;
+      if (signalMcap !== undefined && signalMcap < minMcap) {
+        await deps.logger.log('info', 'lore.autotrade.skipped', {
+          event, symbol, mint, boxType, signalMcap, minMcap,
+          reason: 'mcap_below_minimum',
+        });
+        return reply.code(200).send({ received: true, event });
+      }
       const previousBox = loreLastBoxPerMint.get(mint!);
       if (previousBox === boxType) {
         await deps.logger.log('info', 'lore.autotrade.skipped', {

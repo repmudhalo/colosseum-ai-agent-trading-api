@@ -111,6 +111,10 @@ export const config = {
     /** SOL amount per LORE auto-trade. */
     autoTradeAmountSol: parseNumber(process.env.LORE_AUTO_TRADE_AMOUNT_SOL, 0.02),
   },
+  snipe: {
+    /** Minimum market cap (USD) to open or keep a position. Tokens below this are force-closed and new trades are blocked. */
+    minMarketCapUsd: parseNumber(process.env.SNIPE_MIN_MCAP_USD, 5000),
+  },
 };
 
 export type AppConfig = typeof config;

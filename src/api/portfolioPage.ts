@@ -47,6 +47,13 @@ export function renderPortfolioPage(): string {
       </div>
     </div>`,
     scripts: `
+function mcapStr(v) {
+  if (v == null) return '--';
+  if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
+  return '$' + Math.round(v);
+}
 let portfolio = null;
 let currentTab = 'open';
 
@@ -66,22 +73,22 @@ function render() {
     t.innerHTML = '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Open positions';
     const rows = portfolio.openPositions || [];
     if (!rows.length) { c.innerHTML = '<div class="empty-state">No open positions</div>'; return; }
-    c.innerHTML = '<table><thead><tr><th>Token</th><th>SOL in</th><th>Entry</th><th>Current</th><th>Peak</th><th>P&L</th><th>From peak</th><th>Duration</th><th>Buys</th><th>Status</th></tr></thead><tbody>' +
+    c.innerHTML = '<table><thead><tr><th>Token</th><th>MCap</th><th>SOL in</th><th>Entry</th><th>Current</th><th>P&L</th><th>From peak</th><th>Duration</th><th>Status</th></tr></thead><tbody>' +
       rows.map(function(p) {
         const sym = p.symbol || shortMint(p.mintAddress);
         const change = p.changePct != null ? p.changePct : 0;
         const peak = p.changeFromPeakPct != null ? p.changeFromPeakPct : 0;
         const st = p.isMoonBag ? '<span class="badge badge-moon">Moon</span>' : '<span class="badge badge-open">Open</span>';
+        const mcap = p.marketCapUsd != null ? mcapStr(p.marketCapUsd) : '--';
         return '<tr>' +
           '<td><div class="token-name">' + sym + '</div><div class="token-mint">' + shortMint(p.mintAddress) + '</div></td>' +
+          '<td style="font-family:var(--mono);font-size:.75rem">' + mcap + '</td>' +
           '<td style="font-family:var(--mono)">' + solStr(p.totalSolSpent) + '</td>' +
           '<td style="font-family:var(--mono)">' + usdStr(p.entryPriceUsd) + '</td>' +
           '<td style="font-family:var(--mono)">' + usdStr(p.currentPriceUsd) + '</td>' +
-          '<td style="font-family:var(--mono)">' + usdStr(p.peakPriceUsd) + '</td>' +
           '<td><span class="' + pnlClass(change) + '">' + pnlStr(change) + '</span></td>' +
           '<td><span class="' + pnlClass(peak) + '">' + pnlStr(peak) + '</span></td>' +
           '<td style="font-family:var(--mono);color:var(--muted)">' + duration(p.firstTradeAt) + '</td>' +
-          '<td style="font-family:var(--mono)">' + p.buyCount + '</td>' +
           '<td>' + st + '</td></tr>';
       }).join('') + '</tbody></table>';
 
