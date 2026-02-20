@@ -38,7 +38,11 @@ export class JupiterClient {
     }
 
     if (privateKeyB58) {
-      this.signer = Keypair.fromSecretKey(bs58.decode(privateKeyB58));
+      const decoded = bs58.decode(privateKeyB58);
+      // Support both 64-byte keypair (secret+public) and 32-byte seed (secret only).
+      this.signer = decoded.length === 32
+        ? Keypair.fromSeed(decoded)
+        : Keypair.fromSecretKey(decoded);
     }
   }
 

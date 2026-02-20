@@ -83,8 +83,10 @@ function validateBase58Key(key: string): void {
   } catch {
     throw new Error('Invalid private key: not valid Base58 encoding.');
   }
-  if (decoded.length !== 64) {
-    throw new Error(`Invalid private key: expected 64 bytes, got ${decoded.length}.`);
+  // Accept both 64-byte keypair (secret + public) and 32-byte seed (secret only).
+  // Solana's Keypair.fromSecretKey() handles 64, Keypair.fromSeed() handles 32.
+  if (decoded.length !== 64 && decoded.length !== 32) {
+    throw new Error(`Invalid private key: expected 32 or 64 bytes, got ${decoded.length}.`);
   }
 }
 
